@@ -80,7 +80,26 @@
   .seg label:last-child { border-right: 0; }
   .seg input { display: none; }
   .seg label:has(input:checked) { background: var(--primary); color: #fff; }
-  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #111; color: #fff; padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 100; max-width: calc(100vw - 32px); }
+  .thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: var(--bg); border: 1px solid var(--line); display: block; cursor: zoom-in; }
+  .thumb.none { display: grid; place-items: center; color: var(--muted); font-size: 18px; cursor: default; }
+  td.img { width: 60px; padding-right: 0; }
+  .imgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; margin-top: 4px; }
+  .imgs .cell { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: var(--bg); }
+  .imgs .cell img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+  .imgs .cell .cover { position: absolute; left: 4px; top: 4px; background: var(--primary); color: #fff; font-size: 11px; padding: 0 6px; border-radius: 4px; }
+  .imgs .cell .ops { position: absolute; inset: auto 0 0 0; display: flex; background: rgba(0,0,0,.55); }
+  .imgs .cell .ops button { flex: 1; white-space: nowrap; background: none; border: 0; color: #fff; font-size: 12px; padding: 3px 0; cursor: pointer; }
+  .imgs .add { display: grid; place-items: center; aspect-ratio: 1; border: 1px dashed var(--muted); border-radius: 8px; cursor: pointer; color: var(--muted); text-align: center; font-size: 12px; line-height: 1.4; }
+  .imgs .add:hover { border-color: var(--primary); color: var(--primary); }
+  .imgs.drag .add { border-color: var(--primary); background: var(--primary-weak); }
+  #viewer { width: 100vw; height: 100vh; max-width: none; max-height: none; border: 0; border-radius: 0; background: rgba(0,0,0,.92); padding: 0; }
+  #viewer img { position: absolute; inset: 0; margin: auto; max-width: calc(100% - 32px); max-height: calc(100% - 96px); object-fit: contain; }
+  #viewer .vbtn { position: absolute; background: rgba(255,255,255,.15); color: #fff; border: 0; border-radius: 99px; width: 44px; height: 44px; font-size: 22px; cursor: pointer; }
+  #viewer .vbtn:hover { background: rgba(255,255,255,.3); }
+  #viewer .prev { left: 12px; top: 50%; transform: translateY(-50%); } #viewer .next { right: 12px; top: 50%; transform: translateY(-50%); }
+  #viewer .x { right: 12px; top: 12px; }
+  #viewer .cap { position: absolute; bottom: 16px; left: 0; right: 0; text-align: center; color: #ddd; }
+  #toast { position: fixed; inset: auto auto 20px 50%; margin: 0; border: 0; transform: translateX(-50%); background: #111; color: #fff; padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 100; max-width: calc(100vw - 32px); }
   #toast.show { opacity: .92; }
   #login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
   #login .panel { padding: 28px; width: min(360px, 100%); }
@@ -144,6 +163,7 @@
         <div class="table-wrap">
           <table>
             <thead><tr>
+              <th></th>
               <th class="sortable hide-sm" data-sort="sku">编码</th>
               <th class="sortable" data-sort="name">名称</th>
               <th class="sortable hide-sm" data-sort="category">分类</th>
@@ -212,6 +232,10 @@
       <label class="f">最低库存（预警）<input name="minQty" type="number" min="0" step="1" value="0"></label>
       <label class="f">单价 (¥)<input name="price" type="number" min="0" step="0.01" value="0"></label>
       <label class="f full">备注<textarea name="note" rows="2" maxlength="500"></textarea></label>
+      <div class="f full"><label class="f">产品图片 <span class="muted">（最多 10 张，第一张为封面，可拖拽或粘贴图片）</span></label>
+        <div class="imgs" id="imgGrid"></div>
+        <input type="file" id="imgInput" accept="image/*" multiple hidden>
+      </div>
     </div>
     <div class="dialog-actions">
       <button type="button" class="btn danger hidden" id="delItemBtn" style="margin-right:auto">删除</button>
@@ -255,7 +279,16 @@
   </form>
 </dialog>
 
-<div id="toast"></div>
+<div id="toast" popover="manual"></div>
+
+<!-- 图片查看 -->
+<dialog id="viewer">
+  <img id="vImg" alt="">
+  <button class="vbtn prev" id="vPrev" aria-label="上一张">‹</button>
+  <button class="vbtn next" id="vNext" aria-label="下一张">›</button>
+  <button class="vbtn x" data-close aria-label="关闭">×</button>
+  <div class="cap" id="vCap"></div>
+</dialog>
 
 <script>
 const $ = (s, el = document) => el.querySelector(s);
@@ -265,11 +298,15 @@ const money = (n) => '¥' + Number(n || 0).toLocaleString('zh-CN', { minimumFrac
 const fmtTime = (iso) => { const d = new Date(iso); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 const TYPE = { in: '入库', out: '出库', adjust: '盘点' };
 const isLow = (i) => i.minQty > 0 && i.qty <= i.minQty;
+const imgUrl = (id, thumb) => `/api/images/${id}${thumb ? '_t' : ''}.jpg`;
+const MAX_IMAGES = 10;
 
 let items = [], movements = [], sort = { key: 'name', dir: 1 }, editing = null, moving = null;
 
 function toast(msg) {
-  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  const t = $('#toast'); t.textContent = msg;
+  try { t.hidePopover(); t.showPopover(); } catch {} // 置于弹窗之上
+  t.classList.add('show');
   clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
@@ -360,6 +397,7 @@ function renderItems() {
   });
   $('#itemsBody').innerHTML = list.length ? list.map((i) => `
     <tr>
+      <td class="img">${i.images?.length ? `<img class="thumb" loading="lazy" src="${imgUrl(i.images[0], true)}" data-gallery="${i.id}" alt="">` : '<div class="thumb none">📷</div>'}</td>
       <td class="muted hide-sm">${esc(i.sku) || '—'}</td>
       <td><a href="#" data-hist="${i.id}" style="color:inherit">${esc(i.name)}</a> ${isLow(i) ? '<span class="tag low">低库存</span>' : ''}</td>
       <td class="hide-sm">${esc(i.category) || '<span class="muted">—</span>'}</td>
@@ -373,7 +411,7 @@ function renderItems() {
         <button class="btn sm" data-edit="${i.id}">编辑</button>
       </td>
     </tr>`).join('')
-    : `<tr><td colspan="8" class="empty">${items.length ? '没有匹配的物品' : '还没有物品，点击右上角「新增物品」开始吧'}</td></tr>`;
+    : `<tr><td colspan="9" class="empty">${items.length ? '没有匹配的物品' : '还没有物品，点击右上角「新增物品」开始吧'}</td></tr>`;
 }
 
 function renderMovements() {
@@ -398,13 +436,14 @@ $$('th[data-sort]').forEach((th) => (th.onclick = () => {
 
 // ---------- 事件委托 ----------
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('[data-mv],[data-edit],[data-hist],[data-close]');
+  const t = e.target.closest('[data-mv],[data-edit],[data-hist],[data-close],img[data-gallery]');
   if (!t) return;
   if (t.dataset.close !== undefined) return t.closest('dialog').close();
   e.preventDefault();
   if (t.dataset.mv) openMove(Number(t.dataset.mv), t.dataset.t);
   if (t.dataset.edit) openItem(items.find((i) => i.id === Number(t.dataset.edit)));
   if (t.dataset.hist) openHistory(Number(t.dataset.hist));
+  if (t.dataset.gallery) { const it = items.find((i) => i.id === Number(t.dataset.gallery)); openViewer(it.images.map((id) => imgUrl(id)), 0, it.name); }
 });
 
 // ---------- 物品编辑 ----------
@@ -417,17 +456,125 @@ function openItem(item) {
   $('#initQtyField').classList.toggle('hidden', !!item);
   $('#delItemBtn').classList.toggle('hidden', !item);
   if (item) ['name', 'sku', 'category', 'unit', 'location', 'minQty', 'price', 'note'].forEach((k) => (f[k].value = item[k] ?? ''));
+  // 图片在对话框内先暂存，点「保存」时才真正上传 / 删除
+  imgs = (item?.images || []).map((id) => ({ id, src: imgUrl(id, true), full: imgUrl(id) }));
+  renderImgs();
   $('#itemDlg').showModal();
 }
 $('#itemForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = Object.fromEntries(new FormData(e.target));
+  const btn = e.submitter || $('#itemForm button.primary');
+  btn.disabled = true;
   try {
-    if (editing) await api('/api/items/' + editing.id, { method: 'PUT', body });
-    else await api('/api/items', { method: 'POST', body });
+    const item = editing
+      ? await api('/api/items/' + editing.id, { method: 'PUT', body })
+      : await api('/api/items', { method: 'POST', body });
+    editing = item; // 新建后若图片上传失败，再次保存不会重复创建
+    const pending = imgs.filter((x) => !x.id);
+    for (let n = 0; n < pending.length; n++) {
+      btn.textContent = `上传图片 ${n + 1}/${pending.length}…`;
+      const r = await api(`/api/items/${item.id}/images`, { method: 'POST', body: { full: pending[n].data, thumb: pending[n].thumb } });
+      pending[n].id = r.id;
+    }
+    const order = imgs.map((x) => x.id);
+    if (order.join() !== (item.images || []).join() || pending.length) {
+      await api(`/api/items/${item.id}/images`, { method: 'PUT', body: { images: order } });
+    }
     $('#itemDlg').close(); toast('已保存'); await reload();
   } catch (err) { toast(err.message); }
+  finally { btn.disabled = false; btn.textContent = '保存'; }
 });
+
+// ---------- 图片编辑 ----------
+let imgs = [];
+function renderImgs() {
+  $('#imgGrid').innerHTML = imgs.map((x, n) => `
+    <div class="cell">
+      <img src="${x.src}" data-idx="${n}" alt="">
+      ${n === 0 ? '<span class="cover">封面</span>' : ''}
+      <div class="ops">
+        ${n > 0 ? `<button type="button" data-cover="${n}">设封面</button>` : ''}
+        <button type="button" data-rm="${n}">删除</button>
+      </div>
+    </div>`).join('') +
+    (imgs.length < MAX_IMAGES ? '<div class="add" id="imgAdd" role="button" tabindex="0">＋<br>添加图片</div>' : '');
+}
+$('#imgGrid').addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.closest('#imgAdd')) return $('#imgInput').click();
+  if (t.dataset.rm) { imgs.splice(Number(t.dataset.rm), 1); return renderImgs(); }
+  if (t.dataset.cover) { imgs.unshift(...imgs.splice(Number(t.dataset.cover), 1)); return renderImgs(); }
+  if (t.dataset.idx) openViewer(imgs.map((x) => x.full), Number(t.dataset.idx), $('#itemForm').name.value);
+});
+$('#imgGrid').addEventListener('keydown', (e) => { if (e.target.id === 'imgAdd' && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); $('#imgInput').click(); } });
+$('#imgInput').addEventListener('change', (e) => { addImageFiles(e.target.files); e.target.value = ''; });
+$('#imgGrid').addEventListener('dragover', (e) => { e.preventDefault(); $('#imgGrid').classList.add('drag'); });
+$('#imgGrid').addEventListener('dragleave', () => $('#imgGrid').classList.remove('drag'));
+$('#imgGrid').addEventListener('drop', (e) => { e.preventDefault(); $('#imgGrid').classList.remove('drag'); addImageFiles(e.dataTransfer.files); });
+$('#itemDlg').addEventListener('paste', (e) => {
+  const files = [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'));
+  if (files.length) { e.preventDefault(); addImageFiles(files); }
+});
+
+async function addImageFiles(fileList) {
+  const files = [...fileList].filter((f) => f.type.startsWith('image/') || /\.(heic|heif)$/i.test(f.name));
+  const room = MAX_IMAGES - imgs.length;
+  if (files.length > room) toast(`每个物品最多 ${MAX_IMAGES} 张图片，已忽略多余的 ${files.length - room} 张`);
+  for (const f of files.slice(0, Math.max(room, 0))) {
+    try {
+      const data = await compressImage(f, 1600, 0.85);
+      const thumb = await compressImage(f, 240, 0.8);
+      imgs.push({ id: null, src: thumb, full: data, data, thumb });
+      renderImgs();
+    } catch { toast(`无法读取图片「${f.name}」，请换成 JPG / PNG 格式`); }
+  }
+}
+
+// 在浏览器里缩放并压缩成 JPEG，手机拍的大图也只有几百 KB
+function compressImage(file, maxSize, quality) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxSize / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; // 透明背景填白
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')); };
+    img.src = url;
+  });
+}
+
+// ---------- 图片查看 ----------
+let viewer = { list: [], i: 0, title: '' };
+function openViewer(list, i, title) {
+  viewer = { list, i, title };
+  showViewer();
+  if (!$('#viewer').open) $('#viewer').showModal();
+}
+function showViewer() {
+  const { list, i, title } = viewer;
+  $('#vImg').src = list[i];
+  $('#vCap').textContent = `${title || ''}  ${i + 1} / ${list.length}`;
+  $('#vPrev').classList.toggle('hidden', list.length < 2);
+  $('#vNext').classList.toggle('hidden', list.length < 2);
+}
+const step = (d) => { viewer.i = (viewer.i + d + viewer.list.length) % viewer.list.length; showViewer(); };
+$('#vPrev').onclick = () => step(-1);
+$('#vNext').onclick = () => step(1);
+$('#viewer').addEventListener('click', (e) => { if (e.target.id === 'viewer') $('#viewer').close(); });
+$('#viewer').addEventListener('keydown', (e) => { if (e.key === 'ArrowLeft') step(-1); if (e.key === 'ArrowRight') step(1); });
+let touchX = null;
+$('#viewer').addEventListener('touchstart', (e) => (touchX = e.touches[0].clientX), { passive: true });
+$('#viewer').addEventListener('touchend', (e) => { if (touchX === null) return; const dx = e.changedTouches[0].clientX - touchX; if (Math.abs(dx) > 40) step(dx < 0 ? 1 : -1); touchX = null; });
 $('#delItemBtn').onclick = async () => {
   if (!editing || !confirm(`确定删除「${editing.name}」？出入库记录会保留。`)) return;
   try { await api('/api/items/' + editing.id, { method: 'DELETE' }); $('#itemDlg').close(); toast('已删除'); await reload(); }

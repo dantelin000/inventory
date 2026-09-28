@@ -10,13 +10,15 @@ const crypto = require('crypto');
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
+const IMG_DIR = path.join(DATA_DIR, 'images');
+const MAX_IMAGES = 10;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PASSWORD = process.env.APP_PASSWORD || '';
 const SECRET = process.env.SESSION_SECRET || crypto.createHash('sha256').update('inv:' + PASSWORD).digest('hex');
 const SESSION_TOKEN = crypto.createHmac('sha256', SECRET).update('session:' + PASSWORD).digest('hex');
 
 // ---------- 存储 ----------
-fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(IMG_DIR, { recursive: true });
 let db = { items: [], movements: [], seq: 1 };
 if (fs.existsSync(DB_FILE)) {
   db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
@@ -53,13 +55,13 @@ function send(res, status, body, headers = {}) {
   res.end(isStr ? body : JSON.stringify(body));
 }
 
-function readBody(req) {
+function readBody(req, maxBytes = 5 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > 5 * 1024 * 1024) { reject(new Error('请求体过大')); req.destroy(); return; }
+      if (size > maxBytes) { reject(new Error('请求体过大')); req.destroy(); return; }
       chunks.push(c);
     });
     req.on('end', () => {
@@ -154,6 +156,42 @@ function toCsv(rows) {
   return '﻿' + rows.map((r) => r.map(csvCell).join(',')).join('\r\n');
 }
 
+// ---------- 图片 ----------
+// 每张图片保存两份：<id>.jpg（大图，≤1600px）和 <id>_t.jpg（缩略图），压缩在浏览器端完成。
+const IMG_ID = /^[a-f0-9]{16}$/;
+
+function decodeImage(dataUrl, field) {
+  const m = /^data:image\/(jpeg|png|webp);base64,(.+)$/.exec(String(dataUrl || ''));
+  if (!m) throw new HttpError(400, `${field} 必须是 JPEG / PNG / WebP 图片`);
+  const buf = Buffer.from(m[2], 'base64');
+  const isJpeg = buf[0] === 0xff && buf[1] === 0xd8;
+  const isPng = buf.slice(0, 4).toString('hex') === '89504e47';
+  const isWebp = buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP';
+  if (!isJpeg && !isPng && !isWebp) throw new HttpError(400, `${field} 不是有效的图片文件`);
+  return buf;
+}
+
+function imgFile(id, thumb) {
+  return path.join(IMG_DIR, id + (thumb ? '_t' : '') + '.jpg');
+}
+
+function removeImageFiles(ids) {
+  ids.forEach((id) => [false, true].forEach((t) => fs.rm(imgFile(id, t), { force: true }, () => {})));
+}
+
+function serveImage(req, res, name) {
+  const m = /^([a-f0-9]{16})(_t)?\.jpg$/.exec(name);
+  if (!m) throw new HttpError(404, '图片不存在');
+  fs.readFile(imgFile(m[1], !!m[2]), (err, data) => {
+    if (err) return send(res, 404, { error: '图片不存在' });
+    let type = 'image/jpeg';
+    if (data[0] === 0x89) type = 'image/png';
+    else if (data.slice(0, 4).toString() === 'RIFF') type = 'image/webp';
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'private, max-age=31536000, immutable' });
+    res.end(data);
+  });
+}
+
 // ---------- API ----------
 async function api(req, res, url) {
   const p = url.pathname;
@@ -183,7 +221,7 @@ async function api(req, res, url) {
   if (p === '/api/items' && m === 'GET') return send(res, 200, db.items);
   if (p === '/api/items' && m === 'POST') {
     const body = await readBody(req);
-    const item = Object.assign({ id: nextId(), qty: 0, createdAt: now(), updatedAt: now() }, cleanItem(body));
+    const item = Object.assign({ id: nextId(), qty: 0, images: [], createdAt: now(), updatedAt: now() }, cleanItem(body));
     db.items.push(item);
     const initQty = num(body.qty, '初始数量', { int: true });
     if (initQty > 0) recordMovement(item, 'in', initQty, '初始库存');
@@ -200,8 +238,42 @@ async function api(req, res, url) {
     }
     if (m === 'DELETE') {
       db.items = db.items.filter((i) => i !== item);
+      removeImageFiles(item.images || []);
       save();
       return send(res, 200, { ok: true });
+    }
+  }
+
+  // 物品图片
+  if (p.startsWith('/api/images/') && m === 'GET') return serveImage(req, res, p.slice('/api/images/'.length));
+  match = p.match(/^\/api\/items\/(\d+)\/images$/);
+  if (match) {
+    const item = findItem(match[1]);
+    item.images = item.images || [];
+    if (m === 'POST') {
+      // 上传：{ full: dataURL, thumb: dataURL }
+      if (item.images.length >= MAX_IMAGES) throw new HttpError(400, `每个物品最多 ${MAX_IMAGES} 张图片`);
+      const body = await readBody(req, 12 * 1024 * 1024);
+      const full = decodeImage(body.full, '图片');
+      const thumb = decodeImage(body.thumb, '缩略图');
+      const id = crypto.randomBytes(8).toString('hex');
+      await fs.promises.writeFile(imgFile(id, false), full);
+      await fs.promises.writeFile(imgFile(id, true), thumb);
+      item.images.push(id);
+      item.updatedAt = now();
+      save();
+      return send(res, 201, { id, item });
+    }
+    if (m === 'PUT') {
+      // 调整顺序 / 删除：{ images: [id...] }，第一张为封面，未列出的图片会被删除
+      const body = await readBody(req);
+      if (!Array.isArray(body.images)) throw new HttpError(400, 'images 必须是数组');
+      const next = [...new Set(body.images.map(String))].filter((id) => item.images.includes(id));
+      removeImageFiles(item.images.filter((id) => !next.includes(id)));
+      item.images = next;
+      item.updatedAt = now();
+      save();
+      return send(res, 200, item);
     }
   }
 
@@ -226,8 +298,8 @@ async function api(req, res, url) {
 
   // 导出 / 备份
   if (p === '/api/export/items.csv') {
-    const rows = [['编码', '名称', '分类', '单位', '库位', '数量', '最低库存', '单价', '库存金额', '备注', '更新时间']];
-    db.items.forEach((i) => rows.push([i.sku, i.name, i.category, i.unit, i.location, i.qty, i.minQty, i.price, (i.qty * i.price).toFixed(2), i.note, i.updatedAt]));
+    const rows = [['编码', '名称', '分类', '单位', '库位', '数量', '最低库存', '单价', '库存金额', '图片数', '备注', '更新时间']];
+    db.items.forEach((i) => rows.push([i.sku, i.name, i.category, i.unit, i.location, i.qty, i.minQty, i.price, (i.qty * i.price).toFixed(2), (i.images || []).length, i.note, i.updatedAt]));
     return send(res, 200, toCsv(rows), {
       'Content-Type': 'text/csv; charset=utf-8',
       'Content-Disposition': `attachment; filename="items-${Date.now()}.csv"`,
@@ -249,6 +321,7 @@ async function api(req, res, url) {
     const body = await readBody(req);
     if (!Array.isArray(body.items) || !Array.isArray(body.movements)) throw new HttpError(400, '备份文件格式不正确');
     const maxId = Math.max(0, ...body.items.map((i) => i.id || 0), ...body.movements.map((x) => x.id || 0));
+    body.items.forEach((i) => { i.images = (Array.isArray(i.images) ? i.images : []).filter((id) => IMG_ID.test(id) && fs.existsSync(imgFile(id))); });
     db = { items: body.items, movements: body.movements, seq: Math.max(Number(body.seq) || 1, maxId + 1) };
     save();
     return send(res, 200, { ok: true, items: db.items.length, movements: db.movements.length });
