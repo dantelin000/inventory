@@ -104,6 +104,44 @@
   #login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
   #login .panel { padding: 28px; width: min(360px, 100%); }
   .hidden { display: none !important; }
+  .tag.issued { background: #e8f7ee; color: var(--ok); }
+  .tag.void { background: var(--bg); color: var(--muted); text-decoration: line-through; }
+  @media (prefers-color-scheme: dark) { .tag.issued { background: #14301f; } }
+  tr.voided td { color: var(--muted); }
+  .profit-pos { color: var(--ok); } .profit-neg { color: var(--danger); }
+  /* 发票编辑 */
+  #invDlg { width: min(960px, calc(100vw - 32px)); }
+  #invLines td { padding: 6px; vertical-align: middle; }
+  #invLines input, #invLines select { padding: 6px 8px; }
+  #invLines .w-qty { width: 90px; } #invLines .w-price { width: 120px; }
+  .inv-sum { display: grid; grid-template-columns: 1fr auto; gap: 4px 0; justify-content: end; margin-left: auto; width: min(360px, 100%); font-variant-numeric: tabular-nums; }
+  .inv-sum div:nth-child(even) { text-align: right; padding-left: 24px; }
+  .inv-sum .total { font-size: 18px; font-weight: 700; border-top: 1px solid var(--line); padding-top: 6px; }
+  .inv-internal { background: var(--primary-weak); border-radius: 8px; padding: 10px 12px; margin-top: 12px; display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; }
+  .stock-warn { color: var(--danger); font-size: 12px; }
+  /* 发票打印样式：始终白底黑字 */
+  #invView { width: min(860px, calc(100vw - 32px)); }
+  .inv-doc { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: #fff; color: #111; padding: 32px; border: 1px solid #e5e7eb; border-radius: 8px; position: relative; font-size: 13px; }
+  .inv-doc table { margin: 16px 0; } .inv-doc th { background: #f3f4f6; color: #374151; }
+  .inv-doc th, .inv-doc td { border-bottom: 1px solid #e5e7eb; white-space: normal; }
+  .inv-doc tbody tr:hover { background: none; }
+  .inv-head { display: flex; justify-content: space-between; gap: 24px; border-bottom: 2px solid #111; padding-bottom: 16px; }
+  .inv-head h2 { margin: 0 0 4px; font-size: 20px; }
+  .inv-title { font-size: 22px; font-weight: 700; letter-spacing: 2px; text-align: right; }
+  .inv-meta { text-align: right; color: #4b5563; }
+  .inv-to { margin-top: 16px; }
+  .inv-doc .lbl { color: #6b7280; font-size: 12px; }
+  .inv-doc .inv-sum div { color: #111; } .inv-doc .inv-sum .total { border-color: #111; }
+  .inv-foot { margin-top: 24px; color: #4b5563; text-align: center; border-top: 1px dashed #d1d5db; padding-top: 12px; }
+  .void-stamp { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) rotate(-18deg); border: 4px solid #dc2626; color: #dc2626; font-size: 48px; font-weight: 800; padding: 4px 24px; border-radius: 8px; opacity: .35; pointer-events: none; }
+  #printRoot { display: none; }
+  @media print {
+    @page { margin: 12mm; }
+    body.printing { background: #fff; }
+    body.printing > :not(#printRoot) { display: none !important; }
+    body.printing #printRoot { display: block; }
+    #printRoot .inv-doc { border: 0; padding: 0; }
+  }
 </style>
 </head>
 <body>
@@ -123,6 +161,7 @@
       <nav>
         <button data-tab="dashboard" class="active">概览</button>
         <button data-tab="items">物品</button>
+        <button data-tab="invoices">销售/发票</button>
         <button data-tab="movements">出入库记录</button>
         <button data-tab="data">数据</button>
       </nav>
@@ -136,7 +175,9 @@
       <div class="stats">
         <div class="panel stat"><div class="label">物品种类</div><div class="value" id="sCount">0</div></div>
         <div class="panel stat"><div class="label">库存总数量</div><div class="value" id="sQty">0</div></div>
-        <div class="panel stat"><div class="label">库存总金额</div><div class="value" id="sValue">¥0</div></div>
+        <div class="panel stat"><div class="label">库存成本金额</div><div class="value" id="sValue">¥0</div></div>
+        <div class="panel stat"><div class="label">本月销售额</div><div class="value" id="sSales">¥0</div></div>
+        <div class="panel stat"><div class="label">本月毛利</div><div class="value" id="sProfit">¥0</div></div>
         <div class="panel stat"><div class="label">低库存预警</div><div class="value" id="sLow" style="color:var(--danger)">0</div></div>
       </div>
       <div class="grid2">
@@ -169,11 +210,31 @@
               <th class="sortable hide-sm" data-sort="category">分类</th>
               <th class="sortable hide-sm" data-sort="location">库位</th>
               <th class="sortable num" data-sort="qty">数量</th>
-              <th class="sortable num hide-sm" data-sort="price">单价</th>
-              <th class="sortable num hide-sm" data-sort="value">金额</th>
+              <th class="sortable num hide-sm" data-sort="price">成本价</th>
+              <th class="sortable num hide-sm" data-sort="salePrice">售价</th>
+              <th class="sortable num hide-sm" data-sort="value">库存成本</th>
               <th></th>
             </tr></thead>
             <tbody id="itemsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 销售 / 发票 -->
+    <section data-view="invoices" class="hidden">
+      <div class="panel">
+        <div class="toolbar">
+          <input class="grow" id="iq" placeholder="搜索 发票号 / 客户 / 商品…" type="search">
+          <select id="iStatus"><option value="">全部状态</option><option value="issued">有效</option><option value="void">已作废</option></select>
+          <input type="month" id="iMonth" style="width:auto" title="按月份筛选">
+          <button class="btn primary" id="newInvBtn">+ 新建发票</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>发票号</th><th>日期</th><th>客户</th><th class="num hide-sm">商品数</th><th class="num">总额</th><th class="num hide-sm">毛利</th><th>状态</th><th></th></tr></thead>
+            <tbody id="invBody"></tbody>
+            <tfoot><tr id="invFoot"></tr></tfoot>
           </table>
         </div>
       </div>
@@ -198,11 +259,26 @@
     <!-- 数据 -->
     <section data-view="data" class="hidden">
       <div class="panel" style="padding:20px;display:grid;gap:20px">
+        <form id="settingsForm">
+          <h3 style="margin:0 0 8px">发票设置</h3>
+          <p class="muted" style="margin:0 0 8px">以下信息会打印在发票抬头和底部。</p>
+          <div class="fields">
+            <label class="f">公司 / 店铺名称<input name="companyName" maxlength="120"></label>
+            <label class="f">电话<input name="companyPhone" maxlength="60"></label>
+            <label class="f full">地址<input name="companyAddress" maxlength="300"></label>
+            <label class="f">税号<input name="companyTaxId" maxlength="60"></label>
+            <label class="f">货币符号<input name="currency" maxlength="5" placeholder="¥"></label>
+            <label class="f">默认税率 (%)<input name="taxRate" type="number" min="0" max="100" step="0.01"></label>
+            <label class="f full">发票底部文字<input name="invoiceFooter" maxlength="300"></label>
+          </div>
+          <button class="btn primary" style="margin-top:12px">保存设置</button>
+        </form>
         <div>
           <h3 style="margin:0 0 8px">导出 Excel (CSV)</h3>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <a class="btn" href="/api/export/items.csv">导出物品清单</a>
             <a class="btn" href="/api/export/movements.csv">导出出入库记录</a>
+            <a class="btn" href="/api/export/invoices.csv">导出发票明细</a>
           </div>
         </div>
         <div>
@@ -230,7 +306,8 @@
       <label class="f">库位<input name="location" maxlength="60"></label>
       <label class="f" id="initQtyField">初始数量<input name="qty" type="number" min="0" step="1" value="0"></label>
       <label class="f">最低库存（预警）<input name="minQty" type="number" min="0" step="1" value="0"></label>
-      <label class="f">单价 (¥)<input name="price" type="number" min="0" step="0.01" value="0"></label>
+      <label class="f">成本价（进货单价）<input name="price" type="number" min="0" step="0.01" value="0"></label>
+      <label class="f">默认售价<input name="salePrice" type="number" min="0" step="0.01" value="0"></label>
       <label class="f full">备注<textarea name="note" rows="2" maxlength="500"></textarea></label>
       <div class="f full"><label class="f">产品图片 <span class="muted">（最多 10 张，第一张为封面，可拖拽或粘贴图片）</span></label>
         <div class="imgs" id="imgGrid"></div>
@@ -279,6 +356,56 @@
   </form>
 </dialog>
 
+<!-- 新建发票 -->
+<dialog id="invDlg">
+  <form method="dialog" id="invForm">
+    <h3>新建发票 / 销售出库</h3>
+    <div class="fields">
+      <label class="f">客户名称<input name="customerName" list="custList" maxlength="120" placeholder="可留空"></label>
+      <label class="f">日期<input name="date" type="date" required></label>
+      <label class="f">客户电话<input name="customerPhone" maxlength="60"></label>
+      <label class="f">客户地址<input name="customerAddress" maxlength="300"></label>
+    </div>
+    <div class="table-wrap" style="margin-top:16px;border:1px solid var(--line);border-radius:8px">
+      <table>
+        <thead><tr><th>商品</th><th class="num">数量</th><th class="num">售价</th><th class="num hide-sm">成本价</th><th class="num">金额</th><th></th></tr></thead>
+        <tbody id="invLines"></tbody>
+      </table>
+    </div>
+    <button type="button" class="btn sm" id="addLineBtn" style="margin-top:8px">+ 添加商品</button>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;align-items:flex-start">
+      <div class="fields" style="flex:1;min-width:240px">
+        <label class="f">折扣金额<input name="discount" type="number" min="0" step="0.01" value="0"></label>
+        <label class="f">税率 (%)<input name="taxRate" type="number" min="0" max="100" step="0.01" value="0"></label>
+        <label class="f full">备注<input name="note" maxlength="500" placeholder="付款方式、交货说明…"></label>
+      </div>
+      <div style="flex:1;min-width:240px">
+        <div class="inv-sum" id="invSum"></div>
+        <div class="inv-internal" id="invInternal"></div>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>取消</button>
+      <button class="btn primary">开具发票并出库</button>
+    </div>
+  </form>
+</dialog>
+<datalist id="custList"></datalist>
+
+<!-- 查看发票 -->
+<dialog id="invView">
+  <form method="dialog">
+    <div id="invDoc"></div>
+    <div class="inv-internal" id="invViewInternal"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn danger" id="voidInvBtn" style="margin-right:auto">作废（退回库存）</button>
+      <button class="btn">关闭</button>
+      <button type="button" class="btn primary" id="printInvBtn">打印 / 保存 PDF</button>
+    </div>
+  </form>
+</dialog>
+<div id="printRoot"></div>
+
 <div id="toast" popover="manual"></div>
 
 <!-- 图片查看 -->
@@ -294,13 +421,14 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = (n) => '¥' + Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const money = (n) => (settings.currency || '¥') + Number(n || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtTime = (iso) => { const d = new Date(iso); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 const TYPE = { in: '入库', out: '出库', adjust: '盘点' };
 const isLow = (i) => i.minQty > 0 && i.qty <= i.minQty;
 const imgUrl = (id, thumb) => `/api/images/${id}${thumb ? '_t' : ''}.jpg`;
 const MAX_IMAGES = 10;
 
+let settings = {}, invoices = [];
 let items = [], movements = [], sort = { key: 'name', dir: 1 }, editing = null, moving = null;
 
 function toast(msg) {
@@ -340,7 +468,7 @@ async function start() {
 }
 
 async function reload() {
-  [items, movements] = await Promise.all([api('/api/items'), api('/api/movements?limit=2000')]);
+  [items, movements, invoices, settings] = await Promise.all([api('/api/items'), api('/api/movements?limit=2000'), api('/api/invoices'), api('/api/settings')]);
   render();
 }
 
@@ -355,12 +483,18 @@ $$('[data-goto]').forEach((b) => (b.onclick = () => go(b.dataset.goto)));
 if (location.hash) go(location.hash.slice(1));
 
 // ---------- 渲染 ----------
-function render() { renderDashboard(); renderItems(); renderMovements(); renderCategories(); }
+function render() { renderDashboard(); renderItems(); renderMovements(); renderCategories(); renderInvoices(); renderSettings(); }
 
 function renderDashboard() {
   $('#sCount').textContent = items.length;
   $('#sQty').textContent = items.reduce((a, i) => a + i.qty, 0).toLocaleString();
   $('#sValue').textContent = money(items.reduce((a, i) => a + i.qty * i.price, 0));
+  const month = today().slice(0, 7);
+  const monthInv = invoices.filter((v) => v.status === 'issued' && v.date.startsWith(month));
+  $('#sSales').textContent = money(monthInv.reduce((a, v) => a + v.total, 0));
+  const profit = monthInv.reduce((a, v) => a + v.profit, 0);
+  $('#sProfit').textContent = money(profit);
+  $('#sProfit').className = 'value ' + (profit < 0 ? 'profit-neg' : 'profit-pos');
   const low = items.filter(isLow).sort((a, b) => a.qty - b.qty);
   $('#sLow').textContent = low.length;
   $('#lowBody').innerHTML = low.length ? low.slice(0, 10).map((i) => `
@@ -384,7 +518,7 @@ function renderItems() {
   const q = $('#q').value.trim().toLowerCase();
   const cat = $('#catFilter').value;
   const lowOnly = $('#lowOnly').checked;
-  const val = (i, k) => (k === 'value' ? i.qty * i.price : i[k]);
+  const val = (i, k) => (k === 'value' ? i.qty * i.price : k === 'salePrice' ? i.salePrice || 0 : i[k]);
   const list = items
     .filter((i) => (!cat || i.category === cat) && (!lowOnly || isLow(i)) &&
       (!q || [i.name, i.sku, i.location, i.note, i.category].some((f) => String(f || '').toLowerCase().includes(q))))
@@ -404,6 +538,7 @@ function renderItems() {
       <td class="hide-sm">${esc(i.location) || '<span class="muted">—</span>'}</td>
       <td class="num ${isLow(i) ? 'qty-low' : ''}">${i.qty} <span class="muted">${esc(i.unit)}</span></td>
       <td class="num hide-sm">${money(i.price)}</td>
+      <td class="num hide-sm">${i.salePrice ? money(i.salePrice) : '<span class="muted">—</span>'}</td>
       <td class="num hide-sm">${money(i.qty * i.price)}</td>
       <td class="actions">
         <button class="btn sm in" data-mv="${i.id}" data-t="in">入库</button>
@@ -411,7 +546,7 @@ function renderItems() {
         <button class="btn sm" data-edit="${i.id}">编辑</button>
       </td>
     </tr>`).join('')
-    : `<tr><td colspan="9" class="empty">${items.length ? '没有匹配的物品' : '还没有物品，点击右上角「新增物品」开始吧'}</td></tr>`;
+    : `<tr><td colspan="10" class="empty">${items.length ? '没有匹配的物品' : '还没有物品，点击右上角「新增物品」开始吧'}</td></tr>`;
 }
 
 function renderMovements() {
@@ -455,7 +590,7 @@ function openItem(item) {
   $('#itemDlgTitle').textContent = item ? '编辑物品' : '新增物品';
   $('#initQtyField').classList.toggle('hidden', !!item);
   $('#delItemBtn').classList.toggle('hidden', !item);
-  if (item) ['name', 'sku', 'category', 'unit', 'location', 'minQty', 'price', 'note'].forEach((k) => (f[k].value = item[k] ?? ''));
+  if (item) ['name', 'sku', 'category', 'unit', 'location', 'minQty', 'price', 'salePrice', 'note'].forEach((k) => (f[k].value = item[k] ?? ''));
   // 图片在对话框内先暂存，点「保存」时才真正上传 / 删除
   imgs = (item?.images || []).map((id) => ({ id, src: imgUrl(id, true), full: imgUrl(id) }));
   renderImgs();
@@ -616,6 +751,235 @@ async function openHistory(id) {
   $('#histDlg').showModal();
 }
 
+// ---------- 发票列表 ----------
+const today = () => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+const INV_STATUS = { issued: '有效', void: '已作废' };
+
+function renderInvoices() {
+  const q = $('#iq').value.trim().toLowerCase();
+  const st = $('#iStatus').value;
+  const mon = $('#iMonth').value;
+  const list = invoices.filter((v) => (!st || v.status === st) && (!mon || v.date.startsWith(mon)) &&
+    (!q || [v.no, v.customer.name, v.customer.phone, v.note, ...v.lines.map((l) => l.name + ' ' + l.sku)].some((f) => String(f || '').toLowerCase().includes(q))));
+  $('#invBody').innerHTML = list.length ? list.map((v) => `
+    <tr class="${v.status === 'void' ? 'voided' : ''}">
+      <td><a href="#" data-inv="${v.id}" style="color:inherit">${esc(v.no)}</a></td>
+      <td>${esc(v.date)}</td>
+      <td>${esc(v.customer.name) || '<span class="muted">—</span>'}</td>
+      <td class="num hide-sm">${v.lines.length}</td>
+      <td class="num">${money(v.total)}</td>
+      <td class="num hide-sm ${v.status === 'void' ? '' : v.profit < 0 ? 'profit-neg' : 'profit-pos'}">${money(v.profit)}</td>
+      <td><span class="tag ${v.status}">${INV_STATUS[v.status]}</span></td>
+      <td class="actions"><button class="btn sm" data-inv="${v.id}">查看</button></td>
+    </tr>`).join('')
+    : `<tr><td colspan="8" class="empty">${invoices.length ? '没有匹配的发票' : '还没有发票，点击「新建发票」开始销售出库'}</td></tr>`;
+  const valid = list.filter((v) => v.status === 'issued');
+  $('#invFoot').innerHTML = valid.length ? `<td colspan="4" class="muted">有效发票 ${valid.length} 张合计</td>
+    <td class="num"><strong>${money(valid.reduce((a, v) => a + v.total, 0))}</strong></td>
+    <td class="num hide-sm"><strong>${money(valid.reduce((a, v) => a + v.profit, 0))}</strong></td><td colspan="2"></td>` : '';
+  $('#custList').innerHTML = [...new Set(invoices.map((v) => v.customer.name).filter(Boolean))].map((n) => `<option value="${esc(n)}">`).join('');
+}
+['#iq', '#iStatus', '#iMonth'].forEach((s) => $(s).addEventListener('input', renderInvoices));
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-inv]');
+  if (t) { e.preventDefault(); openInvoice(Number(t.dataset.inv)); }
+});
+
+// ---------- 新建发票 ----------
+let invLines = [];
+$('#newInvBtn').onclick = () => {
+  if (!items.length) return toast('请先添加物品');
+  const f = $('#invForm');
+  f.reset();
+  f.date.value = today();
+  f.taxRate.value = settings.taxRate || 0;
+  invLines = [{ itemId: '', qty: 1, unitPrice: 0 }];
+  renderLines();
+  $('#invDlg').showModal();
+};
+$('#addLineBtn').onclick = () => { invLines.push({ itemId: '', qty: 1, unitPrice: 0 }); renderLines(); $('#invLines tr:last-child select').focus(); };
+
+function renderLines() {
+  const opts = items.slice().sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))
+    .map((i) => `<option value="${i.id}">${esc(i.name)}${i.sku ? ' · ' + esc(i.sku) : ''}（库存 ${i.qty}${esc(i.unit)}）</option>`).join('');
+  $('#invLines').innerHTML = invLines.map((l, n) => `
+    <tr data-line="${n}">
+      <td style="min-width:200px"><select data-f="itemId" required><option value="">选择商品…</option>${opts}</select><div class="stock-warn" data-warn></div></td>
+      <td class="num"><input class="w-qty" data-f="qty" type="number" min="1" step="1" value="${l.qty}" required></td>
+      <td class="num"><input class="w-price" data-f="unitPrice" type="number" min="0" step="0.01" value="${l.unitPrice}" required></td>
+      <td class="num hide-sm muted" data-cost></td>
+      <td class="num" data-amt></td>
+      <td><button type="button" class="btn sm danger" data-rmline="${n}" ${invLines.length < 2 ? 'disabled' : ''}>×</button></td>
+    </tr>`).join('');
+  $$('#invLines tr').forEach((tr, n) => { tr.querySelector('select').value = invLines[n].itemId; });
+  calcInvoice();
+}
+$('#invLines').addEventListener('input', (e) => {
+  const tr = e.target.closest('tr[data-line]');
+  if (!tr) return;
+  const l = invLines[Number(tr.dataset.line)];
+  const f = e.target.dataset.f;
+  l[f] = e.target.value;
+  if (f === 'itemId') { // 选择商品时带出默认售价
+    const it = items.find((i) => i.id === Number(l.itemId));
+    l.unitPrice = it ? it.salePrice || 0 : 0;
+    tr.querySelector('[data-f=unitPrice]').value = l.unitPrice;
+  }
+  calcInvoice();
+});
+$('#invLines').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-rmline]');
+  if (b) { invLines.splice(Number(b.dataset.rmline), 1); renderLines(); }
+});
+['discount', 'taxRate'].forEach((n) => $('#invForm')[n].addEventListener('input', calcInvoice));
+$('#invForm').customerName.addEventListener('change', (e) => {
+  const prev = invoices.find((v) => v.customer.name === e.target.value);
+  if (!prev) return;
+  const f = $('#invForm');
+  if (!f.customerPhone.value) f.customerPhone.value = prev.customer.phone;
+  if (!f.customerAddress.value) f.customerAddress.value = prev.customer.address;
+});
+
+const r2 = (n) => Math.round(n * 100) / 100;
+function calcInvoice() {
+  const need = {};
+  invLines.forEach((l) => { if (l.itemId) need[l.itemId] = (need[l.itemId] || 0) + (Number(l.qty) || 0); });
+  let subtotal = 0, cost = 0;
+  $$('#invLines tr').forEach((tr, n) => {
+    const l = invLines[n];
+    const it = items.find((i) => i.id === Number(l.itemId));
+    const amt = r2((Number(l.qty) || 0) * (Number(l.unitPrice) || 0));
+    subtotal += amt;
+    if (it) cost += r2((Number(l.qty) || 0) * it.price);
+    tr.querySelector('[data-amt]').textContent = money(amt);
+    tr.querySelector('[data-cost]').textContent = it ? money(it.price) : '';
+    tr.querySelector('[data-warn]').textContent = it && need[l.itemId] > it.qty ? `库存不足（当前 ${it.qty}${it.unit}）` : '';
+  });
+  const f = $('#invForm');
+  subtotal = r2(subtotal);
+  const discount = Math.min(Number(f.discount.value) || 0, subtotal);
+  const rate = Number(f.taxRate.value) || 0;
+  const taxable = r2(subtotal - discount);
+  const tax = r2(taxable * rate / 100);
+  const profit = r2(taxable - cost);
+  $('#invSum').innerHTML = `<div>小计</div><div>${money(subtotal)}</div>
+    ${discount ? `<div>折扣</div><div>-${money(discount)}</div>` : ''}
+    ${rate ? `<div>税 (${rate}%)</div><div>${money(tax)}</div>` : ''}
+    <div class="total">总计</div><div class="total">${money(taxable + tax)}</div>`;
+  $('#invInternal').innerHTML = `<span>成本 <strong>${money(cost)}</strong></span>
+    <span>毛利 <strong class="${profit < 0 ? 'profit-neg' : 'profit-pos'}">${money(profit)}</strong></span>
+    <span>毛利率 <strong>${taxable ? (profit / taxable * 100).toFixed(1) + '%' : '—'}</strong></span>
+    <span class="muted">（仅内部可见，不会打印）</span>`;
+}
+
+$('#invForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  const btn = e.submitter || f.querySelector('button.primary');
+  btn.disabled = true;
+  try {
+    const inv = await api('/api/invoices', { method: 'POST', body: {
+      date: f.date.value,
+      customer: { name: f.customerName.value, phone: f.customerPhone.value, address: f.customerAddress.value },
+      lines: invLines.map((l) => ({ itemId: Number(l.itemId), qty: l.qty, unitPrice: l.unitPrice })),
+      discount: f.discount.value, taxRate: f.taxRate.value, note: f.note.value,
+    } });
+    $('#invDlg').close();
+    toast(`已开具 ${inv.no}，库存已扣减`);
+    await reload();
+    openInvoice(inv.id);
+  } catch (err) { toast(err.message); }
+  finally { btn.disabled = false; }
+});
+
+// ---------- 查看 / 打印 / 作废 ----------
+let viewingInv = null;
+function invoiceHtml(v) {
+  const s = settings;
+  return `<div class="inv-doc">
+    ${v.status === 'void' ? '<div class="void-stamp">已作废</div>' : ''}
+    <div class="inv-head">
+      <div>
+        <h2>${esc(s.companyName) || '（请在「数据 → 发票设置」填写公司名称）'}</h2>
+        ${s.companyAddress ? `<div>${esc(s.companyAddress)}</div>` : ''}
+        <div>${[s.companyPhone && '电话：' + esc(s.companyPhone), s.companyTaxId && '税号：' + esc(s.companyTaxId)].filter(Boolean).join('　')}</div>
+      </div>
+      <div class="inv-meta">
+        <div class="inv-title">INVOICE 销售单</div>
+        <div>编号：${esc(v.no)}</div>
+        <div>日期：${esc(v.date)}</div>
+      </div>
+    </div>
+    <div class="inv-to">
+      <div class="lbl">客户</div>
+      <strong>${esc(v.customer.name) || '—'}</strong>
+      ${v.customer.phone ? `<div>${esc(v.customer.phone)}</div>` : ''}
+      ${v.customer.address ? `<div>${esc(v.customer.address)}</div>` : ''}
+    </div>
+    <table>
+      <thead><tr><th>#</th><th>商品</th><th class="num">数量</th><th class="num">单价</th><th class="num">金额</th></tr></thead>
+      <tbody>${v.lines.map((l, n) => `<tr><td>${n + 1}</td><td>${esc(l.name)}${l.sku ? ` <span class="lbl">${esc(l.sku)}</span>` : ''}</td>
+        <td class="num">${l.qty} ${esc(l.unit)}</td><td class="num">${money(l.unitPrice)}</td><td class="num">${money(l.amount)}</td></tr>`).join('')}</tbody>
+    </table>
+    <div class="inv-sum">
+      <div>小计</div><div>${money(v.subtotal)}</div>
+      ${v.discount ? `<div>折扣</div><div>-${money(v.discount)}</div>` : ''}
+      ${v.taxRate ? `<div>税 (${v.taxRate}%)</div><div>${money(v.tax)}</div>` : ''}
+      <div class="total">总计</div><div class="total">${money(v.total)}</div>
+    </div>
+    ${v.note ? `<div style="margin-top:16px"><span class="lbl">备注：</span>${esc(v.note)}</div>` : ''}
+    ${s.invoiceFooter ? `<div class="inv-foot">${esc(s.invoiceFooter)}</div>` : ''}
+  </div>`;
+}
+function openInvoice(id) {
+  const v = invoices.find((x) => x.id === id);
+  if (!v) return;
+  viewingInv = v;
+  $('#invDoc').innerHTML = invoiceHtml(v);
+  const rate = v.subtotal - v.discount ? (v.profit / (v.subtotal - v.discount) * 100).toFixed(1) + '%' : '—';
+  $('#invViewInternal').innerHTML = `<span>成本 <strong>${money(v.costTotal)}</strong></span>
+    <span>毛利 <strong class="${v.profit < 0 ? 'profit-neg' : 'profit-pos'}">${money(v.profit)}</strong></span>
+    <span>毛利率 <strong>${rate}</strong></span>
+    ${v.status === 'void' ? `<span class="muted">作废于 ${fmtTime(v.voidedAt)}${v.voidReason ? '：' + esc(v.voidReason) : ''}</span>` : '<span class="muted">（仅内部可见，不会打印）</span>'}`;
+  $('#voidInvBtn').classList.toggle('hidden', v.status === 'void');
+  if (!$('#invView').open) $('#invView').showModal();
+}
+$('#printInvBtn').onclick = () => {
+  $('#printRoot').innerHTML = invoiceHtml(viewingInv);
+  document.body.classList.add('printing');
+  printTitle = document.title;
+  document.title = viewingInv.no; // 保存 PDF 时的默认文件名
+  window.print();
+};
+let printTitle = document.title;
+window.addEventListener('afterprint', () => { // iOS Safari 的 print() 不会阻塞，需在打印结束后再恢复
+  document.title = printTitle;
+  document.body.classList.remove('printing');
+});
+$('#voidInvBtn').onclick = async () => {
+  const reason = prompt(`作废 ${viewingInv.no}？商品数量会退回库存。\n作废原因（可留空）：`);
+  if (reason === null) return;
+  try {
+    await api(`/api/invoices/${viewingInv.id}/void`, { method: 'POST', body: { reason } });
+    toast('已作废，库存已退回'); await reload(); openInvoice(viewingInv.id);
+  } catch (err) { toast(err.message); }
+};
+
+// ---------- 设置 ----------
+function renderSettings() {
+  const f = $('#settingsForm');
+  if (f.contains(document.activeElement)) return; // 正在编辑时不覆盖
+  Object.keys(settings).forEach((k) => { if (f[k]) f[k].value = settings[k]; });
+}
+$('#settingsForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    settings = await api('/api/settings', { method: 'PUT', body: Object.fromEntries(new FormData(e.target)) });
+    e.target.querySelector('button').blur();
+    toast('设置已保存'); render();
+  } catch (err) { toast(err.message); }
+});
+
 // ---------- 恢复备份 ----------
 $('#restoreFile').addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -623,7 +987,7 @@ $('#restoreFile').addEventListener('change', async (e) => {
   if (!file || !confirm('恢复备份将覆盖当前所有数据，确定继续？')) return;
   try {
     const r = await api('/api/backup', { method: 'POST', body: JSON.parse(await file.text()) });
-    toast(`已恢复：${r.items} 个物品，${r.movements} 条记录`); await reload();
+    toast(`已恢复：${r.items} 个物品，${r.movements} 条记录，${r.invoices} 张发票`); await reload();
   } catch (err) { toast('恢复失败：' + err.message); }
 });
 

@@ -19,10 +19,12 @@ const SESSION_TOKEN = crypto.createHmac('sha256', SECRET).update('session:' + PA
 
 // ---------- 存储 ----------
 fs.mkdirSync(IMG_DIR, { recursive: true });
-let db = { items: [], movements: [], seq: 1 };
+const DEFAULT_SETTINGS = { companyName: '', companyAddress: '', companyPhone: '', companyTaxId: '', currency: '¥', taxRate: 0, invoiceFooter: '感谢惠顾！' };
+let db = { items: [], movements: [], invoices: [], settings: {}, seq: 1 };
 if (fs.existsSync(DB_FILE)) {
   db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
 }
+db.settings = Object.assign({}, DEFAULT_SETTINGS, db.settings);
 
 let saveTimer = null;
 function save() {
@@ -113,7 +115,8 @@ function cleanItem(input, existing) {
     unit: str(input.unit, 20) || '件',
     location: str(input.location, 60),
     minQty: num(input.minQty, '最低库存', { int: true }),
-    price: num(input.price, '单价'),
+    price: num(input.price, '成本价'),
+    salePrice: num(input.salePrice, '售价'),
     note: str(input.note, 500),
   };
   if (!item.name) throw new HttpError(400, '名称不能为空');
@@ -130,7 +133,7 @@ function findItem(id) {
   return item;
 }
 
-function recordMovement(item, type, qty, note) {
+function recordMovement(item, type, qty, note, extra) {
   const before = item.qty;
   let after;
   if (type === 'in') after = before + qty;
@@ -142,10 +145,84 @@ function recordMovement(item, type, qty, note) {
   const m = {
     id: nextId(), itemId: item.id, itemName: item.name, sku: item.sku,
     type, qty: type === 'adjust' ? after - before : qty, before, after,
-    note: str(note, 200), at: item.updatedAt,
+    note: str(note, 200), at: item.updatedAt, ...extra,
   };
   db.movements.push(m);
   return m;
+}
+
+// ---------- 发票 / 销售单 ----------
+const round2 = (n) => Math.round(n * 100) / 100;
+
+function localDate(d = new Date()) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function nextInvoiceNo(date) {
+  const prefix = 'INV-' + date.replace(/-/g, '') + '-';
+  const used = db.invoices.filter((x) => x.no.startsWith(prefix)).map((x) => Number(x.no.slice(prefix.length)) || 0);
+  return prefix + String(Math.max(0, ...used) + 1).padStart(3, '0');
+}
+
+function createInvoice(body) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : localDate();
+  const customer = {
+    name: str(body.customer?.name, 120),
+    phone: str(body.customer?.phone, 60),
+    address: str(body.customer?.address, 300),
+  };
+  if (!Array.isArray(body.lines) || !body.lines.length) throw new HttpError(400, '发票至少需要一行商品');
+  if (body.lines.length > 200) throw new HttpError(400, '商品行过多');
+
+  // 先整体校验（含同一商品多行合计），全部通过后再扣库存，保证要么全部成功要么全部不变
+  const need = new Map();
+  const lines = body.lines.map((l, n) => {
+    const item = findItem(l.itemId);
+    const qty = num(l.qty, `第 ${n + 1} 行数量`, { int: true });
+    if (qty <= 0) throw new HttpError(400, `第 ${n + 1} 行数量必须大于 0`);
+    const unitPrice = num(l.unitPrice, `第 ${n + 1} 行单价`);
+    need.set(item, (need.get(item) || 0) + qty);
+    return {
+      itemId: item.id, sku: item.sku, name: item.name, unit: item.unit,
+      qty, unitPrice, amount: round2(qty * unitPrice),
+      unitCost: item.price, cost: round2(qty * item.price),
+    };
+  });
+  for (const [item, qty] of need) {
+    if (qty > item.qty) throw new HttpError(400, `「${item.name}」库存不足：当前 ${item.qty}${item.unit}，需要 ${qty}${item.unit}`);
+  }
+
+  const subtotal = round2(lines.reduce((a, l) => a + l.amount, 0));
+  const discount = Math.min(num(body.discount, '折扣'), subtotal);
+  const taxRate = Math.min(num(body.taxRate, '税率'), 100);
+  const taxable = round2(subtotal - discount);
+  const tax = round2(taxable * taxRate / 100);
+  const total = round2(taxable + tax);
+  const costTotal = round2(lines.reduce((a, l) => a + l.cost, 0));
+
+  const inv = {
+    id: nextId(), no: nextInvoiceNo(date), date, customer, lines,
+    subtotal, discount, taxRate, tax, total, costTotal,
+    profit: round2(taxable - costTotal), // 毛利 = 不含税销售额 - 成本
+    note: str(body.note, 500), status: 'issued', createdAt: now(),
+  };
+  lines.forEach((l) => recordMovement(findItem(l.itemId), 'out', l.qty, `销售 ${inv.no}${customer.name ? ' · ' + customer.name : ''}`, { invoiceId: inv.id }));
+  db.invoices.push(inv);
+  return inv;
+}
+
+function voidInvoice(inv, reason) {
+  if (inv.status === 'void') throw new HttpError(400, '该发票已作废');
+  // 退回库存；商品若已被删除则跳过
+  inv.lines.forEach((l) => {
+    const item = db.items.find((i) => i.id === l.itemId);
+    if (item) recordMovement(item, 'in', l.qty, `作废 ${inv.no}`, { invoiceId: inv.id });
+  });
+  inv.status = 'void';
+  inv.voidedAt = now();
+  inv.voidReason = str(reason, 200);
+  return inv;
 }
 
 function csvCell(v) {
@@ -277,6 +354,39 @@ async function api(req, res, url) {
     }
   }
 
+  // 设置（发票抬头等）
+  if (p === '/api/settings' && m === 'GET') return send(res, 200, db.settings);
+  if (p === '/api/settings' && m === 'PUT') {
+    const b = await readBody(req);
+    db.settings = {
+      companyName: str(b.companyName, 120), companyAddress: str(b.companyAddress, 300),
+      companyPhone: str(b.companyPhone, 60), companyTaxId: str(b.companyTaxId, 60),
+      currency: str(b.currency, 5) || '¥', taxRate: Math.min(num(b.taxRate, '税率'), 100),
+      invoiceFooter: str(b.invoiceFooter, 300),
+    };
+    save();
+    return send(res, 200, db.settings);
+  }
+
+  // 发票 / 销售单
+  if (p === '/api/invoices' && m === 'GET') return send(res, 200, db.invoices.slice().reverse());
+  if (p === '/api/invoices' && m === 'POST') {
+    const inv = createInvoice(await readBody(req));
+    save();
+    return send(res, 201, inv);
+  }
+  match = p.match(/^\/api\/invoices\/(\d+)(\/void)?$/);
+  if (match) {
+    const inv = db.invoices.find((x) => x.id === Number(match[1]));
+    if (!inv) throw new HttpError(404, '发票不存在');
+    if (m === 'GET' && !match[2]) return send(res, 200, inv);
+    if (m === 'POST' && match[2]) {
+      voidInvoice(inv, (await readBody(req)).reason);
+      save();
+      return send(res, 200, inv);
+    }
+  }
+
   // 出入库 / 盘点
   if (p === '/api/movements' && m === 'POST') {
     const body = await readBody(req);
@@ -298,8 +408,8 @@ async function api(req, res, url) {
 
   // 导出 / 备份
   if (p === '/api/export/items.csv') {
-    const rows = [['编码', '名称', '分类', '单位', '库位', '数量', '最低库存', '单价', '库存金额', '图片数', '备注', '更新时间']];
-    db.items.forEach((i) => rows.push([i.sku, i.name, i.category, i.unit, i.location, i.qty, i.minQty, i.price, (i.qty * i.price).toFixed(2), (i.images || []).length, i.note, i.updatedAt]));
+    const rows = [['编码', '名称', '分类', '单位', '库位', '数量', '最低库存', '成本价', '默认售价', '库存成本金额', '图片数', '备注', '更新时间']];
+    db.items.forEach((i) => rows.push([i.sku, i.name, i.category, i.unit, i.location, i.qty, i.minQty, i.price, i.salePrice || 0, (i.qty * i.price).toFixed(2), (i.images || []).length, i.note, i.updatedAt]));
     return send(res, 200, toCsv(rows), {
       'Content-Type': 'text/csv; charset=utf-8',
       'Content-Disposition': `attachment; filename="items-${Date.now()}.csv"`,
@@ -314,17 +424,34 @@ async function api(req, res, url) {
       'Content-Disposition': `attachment; filename="movements-${Date.now()}.csv"`,
     });
   }
+  if (p === '/api/export/invoices.csv') {
+    const rows = [['发票号', '日期', '状态', '客户', '电话', '商品编码', '商品名称', '数量', '单位', '售价', '金额', '成本价', '成本', '发票小计', '折扣', '税率%', '税额', '发票总额', '发票毛利']];
+    db.invoices.forEach((v) => v.lines.forEach((l, n) => rows.push([
+      v.no, v.date, v.status === 'void' ? '已作废' : '有效', v.customer.name, v.customer.phone,
+      l.sku, l.name, l.qty, l.unit, l.unitPrice, l.amount, l.unitCost, l.cost,
+      ...(n === 0 ? [v.subtotal, v.discount, v.taxRate, v.tax, v.total, v.profit] : ['', '', '', '', '', '']),
+    ])));
+    return send(res, 200, toCsv(rows), {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="invoices-${Date.now()}.csv"`,
+    });
+  }
   if (p === '/api/backup' && m === 'GET') {
     return send(res, 200, db, { 'Content-Disposition': `attachment; filename="inventory-backup-${Date.now()}.json"` });
   }
   if (p === '/api/backup' && m === 'POST') {
     const body = await readBody(req);
     if (!Array.isArray(body.items) || !Array.isArray(body.movements)) throw new HttpError(400, '备份文件格式不正确');
-    const maxId = Math.max(0, ...body.items.map((i) => i.id || 0), ...body.movements.map((x) => x.id || 0));
+    const invoices = Array.isArray(body.invoices) ? body.invoices : [];
+    const maxId = Math.max(0, ...[...body.items, ...body.movements, ...invoices].map((x) => x.id || 0));
     body.items.forEach((i) => { i.images = (Array.isArray(i.images) ? i.images : []).filter((id) => IMG_ID.test(id) && fs.existsSync(imgFile(id))); });
-    db = { items: body.items, movements: body.movements, seq: Math.max(Number(body.seq) || 1, maxId + 1) };
+    db = {
+      items: body.items, movements: body.movements, invoices,
+      settings: Object.assign({}, DEFAULT_SETTINGS, body.settings),
+      seq: Math.max(Number(body.seq) || 1, maxId + 1),
+    };
     save();
-    return send(res, 200, { ok: true, items: db.items.length, movements: db.movements.length });
+    return send(res, 200, { ok: true, items: db.items.length, movements: db.movements.length, invoices: invoices.length });
   }
 
   throw new HttpError(404, '接口不存在');
