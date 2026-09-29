@@ -1,0 +1,5 @@
+# Caddy 会为 DOMAIN 自动申请并续期 Let's Encrypt 证书，HTTP 自动跳转到 HTTPS
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy inventory:3000
+}

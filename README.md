@@ -85,20 +85,28 @@ docker compose up -d --build
 
 ### 绑定域名与 HTTPS（建议）
 
-公网使用时强烈建议开启 HTTPS，避免密码被明文传输：
+公网使用时强烈建议开启 HTTPS，避免密码被明文传输。托管平台（Render / Railway / Fly.io）默认自带 HTTPS；自己的服务器可以用仓库里的 `docker-compose.https.yml`，它在前面加了一层 [Caddy](https://caddyserver.com/)，会自动申请并续期免费证书。
 
-- 托管平台（Render / Railway / Fly.io）默认自带 HTTPS。
-- 自己的服务器可以在前面加一层 [Caddy](https://caddyserver.com/)，自动申请证书：
+1. 准备一个域名，在域名服务商处添加 **A 记录**，指向服务器公网 IP（如 `inventory.你的域名.com.au`）
+2. 服务器防火墙 / 安全组放行 **80 和 443** 端口（申请证书需要 80）
+3. 在项目目录创建 `.env`：
 
-  ```
-  # /etc/caddy/Caddyfile
-  inventory.你的域名.com {
-      reverse_proxy localhost:3000
-  }
-  ```
+   ```bash
+   cp .env.example .env
+   nano .env   # 填写 DOMAIN 和 APP_PASSWORD
+   ```
 
-  此时把 `docker-compose.yml` 中的端口改为 `"127.0.0.1:3000:3000"`。
-- 注意：中国大陆的服务器绑定域名需要先完成 ICP 备案。
+4. 启动（如果之前用 `docker-compose.yml` 运行过，先 `docker compose down`，数据卷会保留）：
+
+   ```bash
+   docker compose -f docker-compose.https.yml up -d --build
+   ```
+
+几十秒后访问 `https://你的域名` 即可，HTTP 会自动跳转到 HTTPS。登录 Cookie 在 HTTPS 下会自动加上 `Secure`。
+
+- 更新代码：`git pull && docker compose -f docker-compose.https.yml up -d --build`
+- 查看证书申请日志：`docker compose -f docker-compose.https.yml logs caddy`
+- 注意：中国大陆的服务器绑定域名需要先完成 ICP 备案；澳洲等海外服务器不需要。
 
 ## 数据备份
 
