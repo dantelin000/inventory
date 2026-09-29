@@ -534,8 +534,17 @@ async function api(req, res, url) {
   if (p === '/api/items/import' && m === 'POST') {
     return send(res, 200, importItems(await readBody(req, 20 * 1024 * 1024)));
   }
-  if (p === '/api/import/items-template.csv') {
-    return sendCsv(res, 'items-template', [['SKU', '名称', '分类', '单位', '库位', '数量', '最低库存', '成本价', '默认售价', '免GST', '备注']]);
+  if (p === '/api/import/items-template.csv' || p === '/api/import/items-sample.csv') {
+    const rows = [['SKU', '名称', '分类', '单位', '库位', '数量', '最低库存', '成本价', '默认售价', '免GST', '备注']];
+    if (p.endsWith('sample.csv')) {
+      rows.push(
+        ['HW-001', '不锈钢螺丝 M6x20', '五金', '盒', 'A1-01', 50, 10, 3.25, 6.5, '', '100 颗/盒'],
+        ['HW-002', '六角螺母 M6', '五金', '盒', 'A1-02', 30, 10, 1.8, 3.9, '', ''],
+        ['FD-001', '新鲜苹果', '食品', 'kg', '冷库', 20, 5, 2.5, 4.99, 'Y', '免 GST 商品'],
+        ['', '包装纸箱（大）', '耗材', '个', '', 100, 20, 0.85, '', '', '无 SKU 的物品按名称识别'],
+      );
+    }
+    return sendCsv(res, p.endsWith('sample.csv') ? 'items-sample' : 'items-template', rows);
   }
   if ((match = p.match(/^\/api\/items\/(\d+)$/))) {
     const item = findItem(match[1]);

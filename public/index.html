@@ -295,9 +295,36 @@
     <h3>批量导入物品</h3>
     <p class="muted" style="margin-top:-8px">
       上传 CSV 文件，或在 Excel / 表格软件中复制（含表头）后直接粘贴到下面。
-      可识别的列：SKU、名称 *、分类、单位、库位、数量、最低库存、成本价、默认售价、免GST（填 Y）、备注，列的顺序不限。
-      <a href="/api/import/items-template.csv">下载模板</a>；设置页导出的「物品清单」也可修改后直接导入。
+      <a href="/api/import/items-template.csv">下载空白模板</a> ·
+      <a href="/api/import/items-sample.csv">下载示例文件</a>（含示例数据，可照着填写）；设置页导出的「物品清单」也可修改后直接导入。
     </p>
+    <details class="import-help">
+      <summary>格式说明</summary>
+      <ul>
+        <li>第一行必须是<strong>表头</strong>，从第二行开始每行一个物品；列的顺序不限，不认识的列会被忽略，只有「名称」列是必须的。</li>
+        <li>文件请用 <strong>CSV（UTF-8）</strong>格式：Excel 中选择「另存为 → CSV UTF-8（逗号分隔）」，否则中文可能乱码。不支持直接上传 .xlsx，可改为复制表格粘贴。</li>
+        <li>一次最多导入 5000 行；同一张表中 SKU 不能重复（没有 SKU 的行按名称判断）。</li>
+      </ul>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>列名</th><th>必填</th><th>格式要求</th><th>示例</th></tr></thead>
+          <tbody>
+            <tr><td>名称</td><td>是</td><td class="wrap">最多 120 字</td><td>不锈钢螺丝 M6x20</td></tr>
+            <tr><td>SKU</td><td>否</td><td class="wrap">最多 60 字，不能与已有物品重复（不区分大小写）；用于识别已有物品，没有 SKU 时按名称识别</td><td>HW-001</td></tr>
+            <tr><td>分类</td><td>否</td><td class="wrap">最多 60 字</td><td>五金</td></tr>
+            <tr><td>单位</td><td>否</td><td class="wrap">最多 20 字，留空默认为「件」</td><td>盒</td></tr>
+            <tr><td>库位</td><td>否</td><td class="wrap">最多 60 字</td><td>A1-01</td></tr>
+            <tr><td>数量</td><td>否</td><td class="wrap">≥ 0 的整数，留空为 0；新物品记为入库，已有物品仅在勾选「按表格数量更新库存」时生效（记为盘点）</td><td>50</td></tr>
+            <tr><td>最低库存</td><td>否</td><td class="wrap">≥ 0 的整数，低于或等于此数量会提示低库存</td><td>10</td></tr>
+            <tr><td>成本价</td><td>否</td><td class="wrap">≥ 0 的数字，不含 GST，最多 4 位小数；可带 $ 和千分位逗号</td><td>3.25</td></tr>
+            <tr><td>默认售价</td><td>否</td><td class="wrap">≥ 0 的数字，最多 2 位小数；可带 $ 和千分位逗号</td><td>6.50</td></tr>
+            <tr><td>免GST</td><td>否</td><td class="wrap">免税商品填 Y（也可填 是 / yes / 1），其余留空</td><td>Y</td></tr>
+            <tr><td>备注</td><td>否</td><td class="wrap">最多 500 字</td><td>100 颗/盒</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="hint">表头也可以用英文，例如 Name、SKU、Category、Unit、Location、Qty、Min Qty、Cost、Sale Price、GST Free、Note。</p>
+    </details>
     <div class="row" style="flex-wrap:wrap">
       <label class="btn">选择 CSV 文件…<input type="file" id="importFile" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden></label>
       <span class="muted small" id="importFileName"></span>
