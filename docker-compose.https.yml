@@ -1,0 +1,31 @@
+# 带 HTTPS 的部署：docker compose -f docker-compose.https.yml up -d --build
+# 需要先在同目录的 .env 中设置 DOMAIN、APP_PASSWORD（参考 .env.example）
+services:
+  inventory:
+    build: .
+    restart: unless-stopped
+    environment:
+      - APP_PASSWORD=${APP_PASSWORD:?请在 .env 中设置 APP_PASSWORD}
+    volumes:
+      - inventory-data:/app/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      - DOMAIN=${DOMAIN:?请在 .env 中设置 DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - inventory
+
+volumes:
+  inventory-data:
+  caddy-data:
+  caddy-config:

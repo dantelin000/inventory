@@ -1,0 +1,18 @@
+# Render 一键部署（需要付费实例才能挂载持久磁盘，免费实例重启后数据会丢失）
+services:
+  - type: web
+    name: inventory
+    runtime: node
+    plan: starter
+    buildCommand: "true"
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_PASSWORD
+        sync: false
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: inventory-data
+      mountPath: /var/data
+      sizeGB: 1

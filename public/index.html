@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>库存管理</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="login" class="hidden">
+  <form class="panel" id="loginForm">
+    <h2 style="margin-top:0">📦 库存管理</h2>
+    <label class="f">访问密码<input type="password" name="password" autocomplete="current-password" required autofocus></label>
+    <button class="btn primary" style="width:100%;margin-top:16px">登录</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <div class="bar">
+      <div class="brand">📦 库存管理</div>
+      <nav>
+        <button data-tab="dashboard" class="active">概览</button>
+        <button data-tab="items">物品</button>
+        <button data-tab="invoices">销售发票</button>
+        <button data-tab="customers">客户/应收</button>
+        <button data-tab="purchases">采购入库</button>
+        <button data-tab="suppliers">供应商</button>
+        <button data-tab="movements">库存流水</button>
+        <button data-tab="settings">设置</button>
+      </nav>
+      <button class="btn sm hidden" id="logoutBtn">退出</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- 概览 -->
+    <section data-view="dashboard">
+      <div class="stats">
+        <div class="panel stat"><div class="label">本月销售额（不含 GST）</div><div class="value" id="sSales">0</div></div>
+        <div class="panel stat"><div class="label">本月毛利</div><div class="value" id="sProfit">0</div></div>
+        <div class="panel stat"><div class="label">应收款</div><div class="value" id="sAR">0</div></div>
+        <div class="panel stat"><div class="label">其中逾期</div><div class="value neg" id="sOverdue">0</div></div>
+        <div class="panel stat"><div class="label">本月采购（不含 GST）</div><div class="value" id="sPurch">0</div></div>
+        <div class="panel stat"><div class="label">库存成本金额</div><div class="value" id="sValue">0</div></div>
+        <div class="panel stat"><div class="label">物品种类 / 低库存</div><div class="value"><span id="sCount">0</span> / <span id="sLow" class="neg">0</span></div></div>
+      </div>
+      <div class="grid3">
+        <div class="panel">
+          <div class="section-title">⏰ 逾期未收发票 <button class="btn sm" data-goto="customers">应收款</button></div>
+          <div class="table-wrap"><table><tbody id="dueBody"></tbody></table></div>
+        </div>
+        <div class="panel">
+          <div class="section-title">⚠️ 低库存物品</div>
+          <div class="table-wrap"><table><tbody id="lowBody"></tbody></table></div>
+        </div>
+        <div class="panel">
+          <div class="section-title">最近库存变动 <button class="btn sm" data-goto="movements">全部</button></div>
+          <div class="table-wrap"><table><tbody id="recentBody"></tbody></table></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 物品 -->
+    <section data-view="items" class="hidden">
+      <div class="panel">
+        <div class="toolbar">
+          <input class="grow" id="q" placeholder="搜索 名称 / SKU / 库位 / 备注…" type="search">
+          <select id="catFilter"><option value="">全部分类</option></select>
+          <label class="check muted"><input type="checkbox" id="lowOnly"> 仅低库存</label>
+          <button class="btn primary" id="addItemBtn">+ 新增物品</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th></th>
+              <th class="sortable hide-sm" data-sort="sku">SKU</th>
+              <th class="sortable" data-sort="name">名称</th>
+              <th class="sortable hide-sm" data-sort="category">分类</th>
+              <th class="sortable hide-sm" data-sort="location">库位</th>
+              <th class="sortable num" data-sort="qty">数量</th>
+              <th class="sortable num hide-sm" data-sort="price">成本价</th>
+              <th class="sortable num hide-sm" data-sort="salePrice">售价</th>
+              <th class="sortable num hide-sm" data-sort="value">库存成本</th>
+              <th></th>
+            </tr></thead>
+            <tbody id="itemsBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 销售发票 -->
+    <section data-view="invoices" class="hidden">
+      <div class="panel">
+        <div class="toolbar">
+          <input class="grow" id="iq" placeholder="搜索 发票号 / 客户 / 商品 / Reference…" type="search">
+          <select id="iStatus">
+            <option value="">全部状态</option><option value="open">未收清</option><option value="overdue">逾期</option>
+            <option value="paid">已付清</option><option value="void">已作废</option>
+          </select>
+          <input type="month" id="iMonth" title="按月份筛选">
+          <button class="btn primary" id="newInvBtn">+ 新建发票</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>发票号</th><th>日期</th><th>客户</th><th class="hide-sm">到期日</th><th class="num">总额</th><th class="num">未收</th><th class="num hide-sm">毛利</th><th>状态</th><th></th></tr></thead>
+            <tbody id="invBody"></tbody>
+            <tfoot><tr id="invFoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 客户 / 应收 -->
+    <section data-view="customers" class="hidden">
+      <div class="stats" id="agingStats"></div>
+      <div class="panel">
+        <div class="toolbar">
+          <input class="grow" id="cq" placeholder="搜索 客户名称 / 联系人 / 电话 / ABN…" type="search">
+          <label class="check muted"><input type="checkbox" id="cOwing"> 仅有欠款</label>
+          <button class="btn primary" id="addCustBtn">+ 新增客户</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>客户</th><th class="hide-sm">联系人</th><th class="hide-sm">电话</th><th class="hide-sm">账期</th><th class="num hide-sm">发票数</th><th class="num">未收款</th><th class="num">逾期</th><th></th></tr></thead>
+            <tbody id="custBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 采购入库 -->
+    <section data-view="purchases" class="hidden">
+      <div class="panel">
+        <div class="toolbar">
+          <input class="grow" id="pq" placeholder="搜索 采购单号 / 供应商 / 商品 / 供应商单号…" type="search">
+          <select id="pStatus"><option value="">全部状态</option><option value="received">已入库</option><option value="void">已作废</option></select>
+          <input type="month" id="pMonth" title="按月份筛选">
+          <button class="btn primary" id="newPoBtn">+ 采购入库</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>采购单号</th><th>日期</th><th>供应商</th><th class="hide-sm">供应商单号</th><th class="num hide-sm">商品数</th><th class="num hide-sm">不含 GST</th><th class="num">总额</th><th>状态</th><th></th></tr></thead>
+            <tbody id="poBody"></tbody>
+            <tfoot><tr id="poFoot"></tr></tfoot>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 供应商 -->
+    <section data-view="suppliers" class="hidden">
+      <div class="panel">
+        <div class="toolbar">
+          <input class="grow" id="sq" placeholder="搜索 供应商名称 / 联系人 / 电话 / ABN…" type="search">
+          <button class="btn primary" id="addSupBtn">+ 新增供应商</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>供应商</th><th class="hide-sm">联系人</th><th class="hide-sm">电话</th><th class="hide-sm">邮箱</th><th class="num">采购单数</th><th class="num">采购总额（不含 GST）</th><th></th></tr></thead>
+            <tbody id="supBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 库存流水 -->
+    <section data-view="movements" class="hidden">
+      <div class="panel">
+        <div class="toolbar">
+          <input class="grow" id="mq" placeholder="搜索 物品 / 备注 / 单号…" type="search">
+          <select id="mType"><option value="">全部类型</option><option value="in">入库</option><option value="out">出库</option><option value="adjust">盘点</option></select>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>时间</th><th>类型</th><th>物品</th><th class="num">变动</th><th class="num hide-sm">变动前</th><th class="num">变动后</th><th>备注</th></tr></thead>
+            <tbody id="movBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section data-view="settings" class="hidden">
+      <form id="settingsForm" class="panel" style="padding:20px">
+        <fieldset>
+          <legend>公司信息（显示在发票抬头）</legend>
+          <div class="fields">
+            <label class="f">公司名称 Business Name<input name="companyName" maxlength="120"></label>
+            <label class="f">ABN<input name="abn" maxlength="30" placeholder="12 345 678 901"></label>
+            <label class="f">电话 Phone<input name="companyPhone" maxlength="60"></label>
+            <label class="f">邮箱 Email<input name="companyEmail" maxlength="120" type="email"></label>
+            <label class="f full">地址 Address<textarea name="companyAddress" rows="2" maxlength="500" placeholder="Unit 1, 23 Example St&#10;Sydney NSW 2000"></textarea></label>
+            <label class="f">网站 Website<input name="website" maxlength="120"></label>
+            <div class="f">Logo
+              <div class="row logo-box"><img id="logoImg" class="hidden" alt=""><label class="btn sm">上传 Logo<input type="file" id="logoInput" accept="image/*" hidden></label><button type="button" class="btn sm danger hidden" id="logoDel">删除</button></div>
+            </div>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>GST / 税务</legend>
+          <div class="fields three">
+            <label class="check full"><input type="checkbox" name="gstRegistered"> 已注册 GST（发票标题为 “TAX INVOICE” 并显示 GST）</label>
+            <label class="f">税名<input name="taxName" maxlength="20" placeholder="GST"></label>
+            <label class="f">税率 (%)<input name="taxRate" type="number" min="0" max="100" step="0.01"></label>
+            <label class="f">默认价格模式<select name="pricesIncGst"><option value="false">价格不含 GST（Tax Exclusive）</option><option value="true">价格含 GST（Tax Inclusive）</option></select></label>
+            <label class="f">货币符号<input name="currency" maxlength="5" placeholder="$"></label>
+            <label class="f">货币代码<input name="currencyCode" maxlength="5" placeholder="AUD"></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>发票 / 单号</legend>
+          <div class="fields three">
+            <label class="f">发票号前缀<input name="invoicePrefix" maxlength="20" placeholder="INV-"></label>
+            <label class="f">采购单号前缀<input name="poPrefix" maxlength="20" placeholder="PO-"></label>
+            <label class="f">默认账期（天）<input name="paymentTermsDays" type="number" min="0" max="365" step="1"></label>
+            <label class="f full">发票底部文字<textarea name="invoiceFooter" rows="2" maxlength="500"></textarea></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>收款银行信息（显示在发票 “How to Pay”）</legend>
+          <div class="fields three">
+            <label class="f">银行 Bank<input name="bankName" maxlength="120" placeholder="Commonwealth Bank"></label>
+            <label class="f">户名 Account Name<input name="accountName" maxlength="120"></label>
+            <label class="f">BSB<input name="bsb" maxlength="20" placeholder="062-000"></label>
+            <label class="f">账号 Account Number<input name="accountNumber" maxlength="30"></label>
+            <label class="f">PayID<input name="payId" maxlength="120" placeholder="邮箱 / 手机 / ABN"></label>
+          </div>
+        </fieldset>
+        <button class="btn primary">保存设置</button>
+      </form>
+
+      <div class="panel" style="padding:20px;margin-top:16px;display:grid;gap:20px">
+        <div>
+          <h3 style="margin:0 0 8px">导出 Excel (CSV)</h3>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <a class="btn" href="/api/export/items.csv">物品清单</a>
+            <a class="btn" href="/api/export/invoices.csv">发票汇总</a>
+            <a class="btn" href="/api/export/invoice-lines.csv">发票明细</a>
+            <a class="btn" href="/api/export/purchases.csv">采购明细</a>
+            <a class="btn" href="/api/export/movements.csv">库存流水</a>
+          </div>
+        </div>
+        <div>
+          <h3 style="margin:0 0 8px">备份与恢复</h3>
+          <p class="muted" style="margin:0 0 8px">JSON 备份包含全部数据（不含图片文件）。恢复会<strong>覆盖</strong>当前全部数据。</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <a class="btn" href="/api/backup">下载备份</a>
+            <label class="btn danger">从备份恢复…<input type="file" id="restoreFile" accept=".json,application/json" hidden></label>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- 物品编辑 -->
+<dialog id="itemDlg">
+  <form method="dialog" id="itemForm">
+    <h3 id="itemDlgTitle">新增物品</h3>
+    <div class="fields">
+      <label class="f full">名称 *<input name="name" required maxlength="120"></label>
+      <label class="f">SKU / 编码<input name="sku" maxlength="60"></label>
+      <label class="f">分类<input name="category" list="catList" maxlength="60"></label>
+      <label class="f">单位<input name="unit" placeholder="件" maxlength="20" list="unitList"></label>
+      <label class="f">库位<input name="location" maxlength="60"></label>
+      <label class="f" id="initQtyField">初始数量<input name="qty" type="number" min="0" step="1" value="0"></label>
+      <label class="f">最低库存（预警）<input name="minQty" type="number" min="0" step="1" value="0"></label>
+      <label class="f">成本价（不含 GST）<input name="price" type="number" min="0" step="0.0001" value="0"></label>
+      <label class="f">默认售价<input name="salePrice" type="number" min="0" step="0.01" value="0"></label>
+      <label class="check full"><input type="checkbox" name="gstFree"> GST-free 免税商品（开发票时默认不收 GST）</label>
+      <label class="f full">备注<textarea name="note" rows="2" maxlength="500"></textarea></label>
+      <div class="f full">产品图片 <span class="muted">（最多 10 张，第一张为封面，可拖拽或粘贴图片）</span>
+        <div class="imgs" id="imgGrid"></div>
+        <input type="file" id="imgInput" accept="image/*" multiple hidden>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn danger hidden left" id="delItemBtn">删除</button>
+      <button type="button" class="btn" data-close>取消</button>
+      <button class="btn primary">保存</button>
+    </div>
+  </form>
+</dialog>
+<datalist id="catList"></datalist>
+<datalist id="unitList"><option>件</option><option>个</option><option>箱</option><option>包</option><option>套</option><option>台</option><option>米</option><option>千克</option><option>ea</option><option>box</option><option>kg</option></datalist>
+
+<!-- 手动出入库 -->
+<dialog id="movDlg">
+  <form method="dialog" id="movForm">
+    <h3 id="movTitle">出入库</h3>
+    <p class="muted" id="movInfo" style="margin-top:-8px"></p>
+    <div class="seg" style="margin-bottom:12px">
+      <label><input type="radio" name="type" value="in" checked>入库</label>
+      <label><input type="radio" name="type" value="out">出库</label>
+      <label><input type="radio" name="type" value="adjust">盘点</label>
+    </div>
+    <div class="fields">
+      <label class="f full" id="movQtyLabel">数量<input name="qty" type="number" min="0" step="1" required></label>
+      <label class="f full">备注<input name="note" maxlength="200" placeholder="如：领用、报损、样品…"></label>
+    </div>
+    <p class="hint">提示：销售请用「销售发票」，采购请用「采购入库」，这样会自动记录金额和往来单位。</p>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>取消</button>
+      <button class="btn primary">确认</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 物品历史 -->
+<dialog id="histDlg" class="mid">
+  <form method="dialog">
+    <h3 id="histTitle">记录</h3>
+    <div class="table-wrap" style="max-height:60vh">
+      <table><thead><tr><th>时间</th><th>类型</th><th class="num">变动</th><th class="num">变动后</th><th>备注</th></tr></thead><tbody id="histBody"></tbody></table>
+    </div>
+    <div class="dialog-actions"><button class="btn">关闭</button></div>
+  </form>
+</dialog>
+
+<!-- 客户 / 供应商编辑 -->
+<dialog id="contactDlg">
+  <form method="dialog" id="contactForm">
+    <h3 id="contactTitle">新增客户</h3>
+    <div class="fields">
+      <label class="f full">名称 *<input name="name" required maxlength="120" placeholder="公司或个人名称"></label>
+      <label class="f">联系人<input name="contact" maxlength="80"></label>
+      <label class="f">ABN<input name="abn" maxlength="30"></label>
+      <label class="f">电话<input name="phone" maxlength="60"></label>
+      <label class="f">邮箱<input name="email" type="email" maxlength="120"></label>
+      <label class="f full">地址<textarea name="address" rows="2" maxlength="300"></textarea></label>
+      <label class="f" id="termsField">账期（天）<input name="terms" type="number" min="0" max="365" step="1" placeholder="留空使用默认"></label>
+      <label class="f full">备注<textarea name="note" rows="2" maxlength="500"></textarea></label>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn danger hidden left" id="delContactBtn">删除</button>
+      <button type="button" class="btn" data-close>取消</button>
+      <button class="btn primary">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 新建发票 -->
+<dialog id="invDlg" class="wide">
+  <form method="dialog" id="invForm">
+    <h3>新建销售发票</h3>
+    <div class="fields three">
+      <div class="f">客户
+        <div class="row"><select name="customerId" id="invCustomer"></select><button type="button" class="btn sm" id="invNewCust" title="新增客户">+</button></div>
+      </div>
+      <label class="f">发票日期<input name="date" type="date" required></label>
+      <label class="f">到期日 Due Date<input name="dueDate" type="date" required></label>
+      <label class="f">客户订单号 Reference<input name="reference" maxlength="60" placeholder="可选，如客户 PO 号"></label>
+      <label class="f">价格模式<select name="pricesIncGst"><option value="false">价格不含 GST</option><option value="true">价格含 GST</option></select></label>
+      <div class="f" id="invCustInfo"></div>
+    </div>
+    <div class="table-wrap" style="margin-top:16px;border:1px solid var(--line);border-radius:8px">
+      <table class="lines">
+        <thead><tr><th>商品</th><th class="num">数量</th><th class="num">单价</th><th class="num">折扣%</th><th class="gst-col">GST</th><th class="num hide-sm">成本价</th><th class="num">金额</th><th></th></tr></thead>
+        <tbody id="invLines"></tbody>
+      </table>
+    </div>
+    <button type="button" class="btn sm" id="invAddLine" style="margin-top:8px">+ 添加商品</button>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;align-items:flex-start">
+      <label class="f" style="flex:1;min-width:260px">发票备注（会打印）<textarea name="note" rows="3" maxlength="1000" placeholder="交货说明、付款说明…"></textarea></label>
+      <div style="flex:1;min-width:260px">
+        <div class="sum" id="invSum"></div>
+        <div class="internal" id="invInternal"></div>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>取消</button>
+      <button class="btn primary">开具发票并出库</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 采购入库 -->
+<dialog id="poDlg" class="wide">
+  <form method="dialog" id="poForm">
+    <h3>采购入库</h3>
+    <div class="fields three">
+      <div class="f">供应商
+        <div class="row"><select name="supplierId" id="poSupplier"></select><button type="button" class="btn sm" id="poNewSup" title="新增供应商">+</button></div>
+      </div>
+      <label class="f">入库日期<input name="date" type="date" required></label>
+      <label class="f">供应商发票/单号<input name="supplierRef" maxlength="60" placeholder="可选"></label>
+      <label class="f">成本价更新方式<select name="costMethod">
+        <option value="average">加权平均（推荐）</option><option value="latest">使用本次进货价</option><option value="none">不更新成本价</option>
+      </select></label>
+      <label class="check" style="align-self:end;padding-bottom:10px"><input type="checkbox" name="withGst" checked> 供应商收取 GST</label>
+    </div>
+    <div class="table-wrap" style="margin-top:16px;border:1px solid var(--line);border-radius:8px">
+      <table class="lines">
+        <thead><tr><th>商品</th><th class="num">数量</th><th class="num">进货单价（不含 GST）</th><th class="num hide-sm">当前成本价</th><th class="num">金额</th><th></th></tr></thead>
+        <tbody id="poLines"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:8px"><button type="button" class="btn sm" id="poAddLine">+ 添加商品</button><button type="button" class="btn sm" id="poNewItem">+ 新建物品</button></div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;align-items:flex-start">
+      <label class="f" style="flex:1;min-width:260px">备注<textarea name="note" rows="3" maxlength="1000"></textarea></label>
+      <div style="flex:1;min-width:260px"><div class="sum" id="poSum"></div></div>
+    </div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>取消</button>
+      <button class="btn primary">确认入库</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 单据查看（发票 / 采购单 / 对账单） -->
+<dialog id="docDlg" class="mid">
+  <div class="dlg-body">
+    <div id="docBody"></div>
+    <div id="docExtra"></div>
+    <div class="dialog-actions" id="docActions"></div>
+  </div>
+</dialog>
+<div id="printRoot"></div>
+
+<!-- 图片查看 -->
+<dialog id="viewer">
+  <img id="vImg" alt="">
+  <button class="vbtn prev" id="vPrev" aria-label="上一张">‹</button>
+  <button class="vbtn next" id="vNext" aria-label="下一张">›</button>
+  <button class="vbtn x" data-close aria-label="关闭">×</button>
+  <div class="cap" id="vCap"></div>
+</dialog>
+
+<div id="toast" popover="manual"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

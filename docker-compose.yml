@@ -1,0 +1,13 @@
+services:
+  inventory:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "80:3000"
+    environment:
+      - APP_PASSWORD=请改成你的密码
+    volumes:
+      - inventory-data:/app/data
+
+volumes:
+  inventory-data:
