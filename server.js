@@ -184,6 +184,85 @@ function cleanItem(input, existing) {
   return item;
 }
 
+// 批量导入：先逐行校验，dryRun 只返回预览；正式导入时跳过有误的行
+// 按 SKU 匹配已有物品（无 SKU 时按名称）；mode=skip 跳过已有物品，mode=update 用表格中非空的单元格更新
+const IMPORT_FIELDS = ['sku', 'name', 'category', 'unit', 'location', 'qty', 'minQty', 'price', 'salePrice', 'gstFree', 'note'];
+const MAX_IMPORT_ROWS = 5000;
+const YES = /^(y|yes|true|1|是|√|✓)$/i;
+function importItems(body) {
+  const rows = Array.isArray(body.rows) ? body.rows : [];
+  if (!rows.length) throw new HttpError(400, '没有可导入的数据');
+  if (rows.length > MAX_IMPORT_ROWS) throw new HttpError(400, `一次最多导入 ${MAX_IMPORT_ROWS} 行`);
+  const mode = body.mode === 'update' ? 'update' : 'skip';
+  const setQty = bool(body.setQty);
+  const seen = new Map(); // 本次表格内的 SKU / 名称 → 行号
+  const seenIds = new Map(); // 已有物品 id → 行号
+  const results = rows.map((raw, n) => {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const line = Number(src.line) || n + 2;
+    const r = { line, sku: str(src.sku, 60), name: str(src.name, 120) };
+    try {
+      const input = {};
+      IMPORT_FIELDS.forEach((k) => { if (src[k] !== undefined && src[k] !== null) input[k] = typeof src[k] === 'string' ? src[k].trim() : src[k]; });
+      ['qty', 'minQty', 'price', 'salePrice'].forEach((k) => { if (typeof input[k] === 'string') input[k] = input[k].replace(/[\s,$¥￥€£]/g, ''); });
+      if (typeof input.gstFree === 'string') input.gstFree = YES.test(input.gstFree);
+      if (!r.name && !r.sku) throw new HttpError(400, '名称不能为空');
+
+      const key = r.sku ? 'sku:' + r.sku.toLowerCase() : 'name:' + r.name.toLowerCase();
+      if (seen.has(key)) throw new HttpError(400, `与第 ${seen.get(key)} 行重复`);
+      seen.set(key, line);
+      const existing = r.sku
+        ? db.items.find((i) => i.sku.toLowerCase() === r.sku.toLowerCase())
+        : db.items.find((i) => i.name.toLowerCase() === r.name.toLowerCase());
+      if (!existing) {
+        r.item = cleanItem(input);
+        r.qty = num(input.qty, '数量', { int: true });
+        r.action = 'create';
+        return r;
+      }
+      if (seenIds.has(existing.id)) throw new HttpError(400, `与第 ${seenIds.get(existing.id)} 行是同一物品`);
+      seenIds.set(existing.id, line);
+      r.id = existing.id;
+      r.name = existing.name;
+      if (mode === 'skip') { r.action = 'skip'; return r; }
+      const merged = Object.assign({}, existing); // 空白单元格保留原值
+      Object.entries(input).forEach(([k, v]) => { if (v !== '') merged[k] = v; });
+      r.item = cleanItem(merged, existing);
+      r.name = r.item.name;
+      if (setQty && input.qty !== undefined && input.qty !== '') {
+        const qty = num(input.qty, '数量', { int: true });
+        if (qty !== existing.qty) { r.qty = qty; r.qtyBefore = existing.qty; }
+      }
+      r.action = 'update';
+    } catch (err) {
+      if (!(err instanceof HttpError)) throw err;
+      r.action = 'error';
+      r.error = err.message;
+    }
+    return r;
+  });
+
+  if (!body.dryRun) {
+    const at = now();
+    results.forEach((r) => {
+      if (r.action === 'create') {
+        const item = Object.assign({ id: nextId(), qty: 0, images: [], createdAt: at, updatedAt: at }, r.item);
+        db.items.push(item);
+        r.id = item.id;
+        if (r.qty > 0) recordMovement(item, 'in', r.qty, '批量导入');
+      } else if (r.action === 'update') {
+        const item = db.items.find((i) => i.id === r.id);
+        Object.assign(item, r.item, { updatedAt: at });
+        if (r.qtyBefore !== undefined) recordMovement(item, 'adjust', r.qty, '批量导入盘点');
+      }
+    });
+    if (results.some((r) => r.action === 'create' || r.action === 'update')) save();
+  }
+  const summary = { create: 0, update: 0, skip: 0, error: 0 };
+  results.forEach((r) => summary[r.action]++);
+  return { dryRun: !!body.dryRun, mode, summary, rows: results.map(({ item, ...r }) => r) };
+}
+
 function recordMovement(item, type, qty, note, extra) {
   const before = item.qty;
   let after;
@@ -451,6 +530,12 @@ async function api(req, res, url) {
     if (initQty > 0) recordMovement(item, 'in', initQty, '初始库存');
     save();
     return send(res, 201, item);
+  }
+  if (p === '/api/items/import' && m === 'POST') {
+    return send(res, 200, importItems(await readBody(req, 20 * 1024 * 1024)));
+  }
+  if (p === '/api/import/items-template.csv') {
+    return sendCsv(res, 'items-template', [['SKU', '名称', '分类', '单位', '库位', '数量', '最低库存', '成本价', '默认售价', '免GST', '备注']]);
   }
   if ((match = p.match(/^\/api\/items\/(\d+)$/))) {
     const item = findItem(match[1]);

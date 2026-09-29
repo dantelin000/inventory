@@ -70,6 +70,7 @@
           <input class="grow" id="q" placeholder="搜索 名称 / SKU / 库位 / 备注…" type="search">
           <select id="catFilter"><option value="">全部分类</option></select>
           <label class="check muted"><input type="checkbox" id="lowOnly"> 仅低库存</label>
+          <button class="btn" id="importItemsBtn">批量导入</button>
           <button class="btn primary" id="addItemBtn">+ 新增物品</button>
         </div>
         <div class="table-wrap">
@@ -287,6 +288,41 @@
 </dialog>
 <datalist id="catList"></datalist>
 <datalist id="unitList"><option>件</option><option>个</option><option>箱</option><option>包</option><option>套</option><option>台</option><option>米</option><option>千克</option><option>ea</option><option>box</option><option>kg</option></datalist>
+
+<!-- 批量导入物品 -->
+<dialog id="importDlg" class="wide">
+  <form method="dialog" id="importForm">
+    <h3>批量导入物品</h3>
+    <p class="muted" style="margin-top:-8px">
+      上传 CSV 文件，或在 Excel / 表格软件中复制（含表头）后直接粘贴到下面。
+      可识别的列：SKU、名称 *、分类、单位、库位、数量、最低库存、成本价、默认售价、免GST（填 Y）、备注，列的顺序不限。
+      <a href="/api/import/items-template.csv">下载模板</a>；设置页导出的「物品清单」也可修改后直接导入。
+    </p>
+    <div class="row" style="flex-wrap:wrap">
+      <label class="btn">选择 CSV 文件…<input type="file" id="importFile" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden></label>
+      <span class="muted small" id="importFileName"></span>
+    </div>
+    <textarea id="importText" rows="6" placeholder="…或在此粘贴表格内容（第一行为表头）" style="margin-top:8px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre;overflow-x:auto"></textarea>
+    <div class="fields" style="margin-top:12px">
+      <div class="f">SKU（无 SKU 时按名称）已存在的物品
+        <div class="seg" style="margin-top:4px">
+          <label><input type="radio" name="mode" value="skip" checked>跳过</label>
+          <label><input type="radio" name="mode" value="update">更新资料</label>
+        </div>
+      </div>
+      <div class="f" id="importSetQtyWrap">
+        <label class="check" style="margin-top:28px"><input type="checkbox" name="setQty"> 同时按表格「数量」更新已有物品库存（记为盘点）</label>
+      </div>
+    </div>
+    <p class="hint">新物品的「数量」会记为入库；更新已有物品时，空白单元格保留原值。</p>
+    <div id="importPreview" style="margin-top:12px"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>取消</button>
+      <button type="button" class="btn" id="importPreviewBtn">预览</button>
+      <button class="btn primary" id="importGo" disabled>确认导入</button>
+    </div>
+  </form>
+</dialog>
 
 <!-- 手动出入库 -->
 <dialog id="movDlg">
