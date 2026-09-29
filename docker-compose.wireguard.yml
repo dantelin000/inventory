@@ -1,0 +1,16 @@
+# 仅限 WireGuard 内网访问：docker compose -f docker-compose.wireguard.yml up -d --build
+# 端口只绑定在 WireGuard 地址上，公网无法访问。步骤见 README「方案三」。
+# 注意：不要改成 "80:3000"，Docker 发布的端口会绕过 UFW 防火墙。
+services:
+  inventory:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${WG_BIND_IP:-10.8.0.1}:80:3000"
+    environment:
+      - APP_PASSWORD=${APP_PASSWORD:?请在 .env 中设置 APP_PASSWORD}
+    volumes:
+      - inventory-data:/app/data
+
+volumes:
+  inventory-data:
