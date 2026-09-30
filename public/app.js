@@ -28,12 +28,14 @@ const supById = (id) => D.suppliers.find((c) => c.id === Number(id));
 
 function toast(msg) {
   const t = $('#toast');
-  t.textContent = msg;
+  t.textContent = tr(msg);
   try { t.hidePopover(); t.showPopover(); } catch {} // 置于弹窗之上
   t.classList.add('show');
   clearTimeout(toast.t);
   toast.t = setTimeout(() => t.classList.remove('show'), 2600);
 }
+const askConfirm = (message) => window.confirm(tr(message));
+const askPrompt = (message) => window.prompt(tr(message));
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -272,7 +274,7 @@ $('#itemForm').addEventListener('submit', async (e) => {
   finally { btn.disabled = false; btn.textContent = '保存'; }
 });
 $('#delItemBtn').onclick = async () => {
-  if (!editingItem || !confirm(`确定删除「${editingItem.name}」？历史单据和流水会保留。`)) return;
+  if (!editingItem || !askConfirm(`确定删除「${editingItem.name}」？历史单据和流水会保留。`)) return;
   try { await api('/api/items/' + editingItem.id, { method: 'DELETE' }); $('#itemDlg').close(); toast('已删除'); await reload(); }
   catch (err) { toast(err.message); }
 };
@@ -446,7 +448,7 @@ $('#contactForm').addEventListener('submit', async (e) => {
 });
 $('#delContactBtn').onclick = async () => {
   const { kind, c } = contactCtx;
-  if (!confirm(`确定删除「${c.name}」？`)) return;
+  if (!askConfirm(`确定删除「${c.name}」？`)) return;
   try { await api(`/api/${kind}/${c.id}`, { method: 'DELETE' }); $('#contactDlg').close(); toast('已删除'); await reload(); }
   catch (err) { toast(err.message); }
 };
@@ -962,6 +964,7 @@ function openDoc({ html, title, extra = '', actions = [] }) {
 let printTitle = document.title;
 function printDoc() {
   $('#printRoot').innerHTML = printable.html;
+  translateNode($('#printRoot'));
   document.body.classList.add('printing');
   printTitle = document.title;
   document.title = printable.title; // 保存 PDF 时的默认文件名
@@ -1009,13 +1012,13 @@ function openInvoiceView(id) {
     } catch (err) { toast(err.message); }
   });
   $$('#docExtra [data-delpay]').forEach((b) => (b.onclick = async () => {
-    if (!confirm('删除这条收款记录？')) return;
+    if (!askConfirm('删除这条收款记录？')) return;
     try { await api(`/api/invoices/${v.id}/payments/${b.dataset.delpay}`, { method: 'DELETE' }); toast('已删除'); await reload(); openInvoiceView(v.id); }
     catch (err) { toast(err.message); }
   }));
 }
 async function voidInvoice(v) {
-  const reason = prompt(`作废 ${v.no}？商品数量会退回库存。\n作废原因（可留空）：`);
+  const reason = askPrompt(`作废 ${v.no}？商品数量会退回库存。\n作废原因（可留空）：`);
   if (reason === null) return;
   try { await api(`/api/invoices/${v.id}/void`, { method: 'POST', body: { reason } }); toast('已作废，库存已退回'); await reload(); openInvoiceView(v.id); }
   catch (err) { toast(err.message); }
@@ -1028,7 +1031,7 @@ function openPurchaseView(id) {
   const extra = `<div class="internal"><span>成本价更新方式：<strong>${methods[p.costMethod] || '—'}</strong></span>
     ${p.status === 'void' ? `<span class="muted">作废于 ${fmtTime(p.voidedAt)}${p.voidReason ? '：' + esc(p.voidReason) : ''}（成本价不会自动恢复）</span>` : ''}</div>`;
   const actions = p.status === 'void' ? [] : [{ label: '作废（扣回库存）', cls: 'danger left', onClick: async () => {
-    const reason = prompt(`作废 ${p.no}？将从库存中扣回本单数量。\n作废原因（可留空）：`);
+    const reason = askPrompt(`作废 ${p.no}？将从库存中扣回本单数量。\n作废原因（可留空）：`);
     if (reason === null) return;
     try { await api(`/api/purchases/${p.id}/void`, { method: 'POST', body: { reason } }); toast('已作废'); await reload(); openPurchaseView(p.id); }
     catch (err) { toast(err.message); }
@@ -1091,7 +1094,7 @@ $('#logoDel').onclick = async () => { await api('/api/settings/logo', { method: 
 $('#restoreFile').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
-  if (!file || !confirm('恢复备份将覆盖当前所有数据，确定继续？')) return;
+  if (!file || !askConfirm('恢复备份将覆盖当前所有数据，确定继续？')) return;
   try {
     const r = await api('/api/backup', { method: 'POST', body: JSON.parse(await file.text()) });
     toast(`已恢复：${r.items} 个物品，${r.invoices} 张发票，${r.purchases} 张采购单`); await reload();
