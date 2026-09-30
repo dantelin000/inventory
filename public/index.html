@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>库存管理</title>
+<title>但丁进销存</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -11,7 +11,8 @@
 
 <div id="login" class="hidden">
   <form class="panel" id="loginForm">
-    <h2 style="margin-top:0">📦 库存管理</h2>
+    <label class="language-picker">语言 / Language <select class="lang-select" aria-label="语言 / Language"><option value="zh">中文</option><option value="en">English</option></select></label>
+    <h2 style="margin-top:0">📦 但丁进销存</h2>
     <label class="f">访问密码<input type="password" name="password" autocomplete="current-password" required autofocus></label>
     <button class="btn primary" style="width:100%;margin-top:16px">登录</button>
   </form>
@@ -20,7 +21,7 @@
 <div id="app" class="hidden">
   <header>
     <div class="bar">
-      <div class="brand">📦 库存管理</div>
+      <div class="brand">📦 但丁进销存</div>
       <nav>
         <button data-tab="dashboard" class="active">概览</button>
         <button data-tab="items">物品</button>
@@ -31,6 +32,7 @@
         <button data-tab="movements">库存流水</button>
         <button data-tab="settings">设置</button>
       </nav>
+      <label class="language-picker">语言 / Language <select class="lang-select" aria-label="语言 / Language"><option value="zh">中文</option><option value="en">English</option></select></label>
       <button class="btn sm hidden" id="logoutBtn">退出</button>
     </div>
   </header>
@@ -143,7 +145,7 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>采购单号</th><th>日期</th><th>供应商</th><th class="hide-sm">供应商单号</th><th class="num hide-sm">商品数</th><th class="num hide-sm">不含 GST</th><th class="num">总额</th><th>状态</th><th></th></tr></thead>
+            <thead><tr><th>采购单号</th><th>日期</th><th data-en="Supplier">供应商</th><th class="hide-sm">供应商单号</th><th class="num hide-sm">商品数</th><th class="num hide-sm">不含 GST</th><th class="num">总额</th><th>状态</th><th></th></tr></thead>
             <tbody id="poBody"></tbody>
             <tfoot><tr id="poFoot"></tr></tfoot>
           </table>
@@ -176,7 +178,7 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>时间</th><th>类型</th><th>物品</th><th class="num">变动</th><th class="num hide-sm">变动前</th><th class="num">变动后</th><th>备注</th></tr></thead>
+            <thead><tr><th>时间</th><th>类型</th><th data-en="Item">物品</th><th class="num">变动</th><th class="num hide-sm">变动前</th><th class="num">变动后</th><th>备注</th></tr></thead>
             <tbody id="movBody"></tbody>
           </table>
         </div>
@@ -381,9 +383,9 @@
 <!-- 采购入库 -->
 <dialog id="poDlg" class="wide">
   <form method="dialog" id="poForm">
-    <h3>采购入库</h3>
+    <h3 data-en="New purchase">采购入库</h3>
     <div class="fields three">
-      <div class="f">供应商
+      <div class="f" data-en="Supplier">供应商
         <div class="row"><select name="supplierId" id="poSupplier"></select><button type="button" class="btn sm" id="poNewSup" title="新增供应商">+</button></div>
       </div>
       <label class="f">入库日期<input name="date" type="date" required></label>
@@ -432,6 +434,7 @@
 
 <div id="toast" popover="manual"></div>
 
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

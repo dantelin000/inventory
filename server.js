@@ -1,4 +1,4 @@
-// 轻量库存管理 —— 零依赖 Node.js 服务端
+// 但丁进销存 —— 零依赖 Node.js 服务端
 // 数据保存在 DATA_DIR/db.json，图片保存在 DATA_DIR/images/；设置 APP_PASSWORD 后需要登录才能访问。
 'use strict';
 
@@ -616,14 +616,19 @@ async function api(req, res, url) {
   }
 
   // ----- 导出 -----
+  const englishCsv = url.searchParams.get('lang') === 'en';
   if (p === '/api/export/items.csv') {
-    const rows = [['SKU', '名称', '分类', '单位', '库位', '数量', '最低库存', '成本价', '默认售价', '免GST', '库存成本金额', '备注']];
+    const rows = [englishCsv
+      ? ['SKU', 'Name', 'Category', 'Unit', 'Location', 'Quantity', 'Minimum stock', 'Cost price', 'Default sale price', 'GST-free', 'Inventory cost value', 'Notes']
+      : ['SKU', '名称', '分类', '单位', '库位', '数量', '最低库存', '成本价', '默认售价', '免GST', '库存成本金额', '备注']];
     db.items.forEach((i) => rows.push([i.sku, i.name, i.category, i.unit, i.location, i.qty, i.minQty, i.price, i.salePrice || 0, i.gstFree ? 'Y' : '', round2(i.qty * i.price), i.note]));
     return sendCsv(res, 'items', rows);
   }
   if (p === '/api/export/movements.csv') {
-    const label = { in: '入库', out: '出库', adjust: '盘点' };
-    const rows = [['时间', '类型', 'SKU', '名称', '变动', '变动前', '变动后', '备注']];
+    const label = englishCsv ? { in: 'Stock in', out: 'Stock out', adjust: 'Stocktake' } : { in: '入库', out: '出库', adjust: '盘点' };
+    const rows = [englishCsv
+      ? ['Time', 'Type', 'SKU', 'Name', 'Change', 'Before', 'After', 'Notes']
+      : ['时间', '类型', 'SKU', '名称', '变动', '变动前', '变动后', '备注']];
     db.movements.forEach((x) => rows.push([x.at, label[x.type], x.sku, x.itemName, x.qty, x.before, x.after, x.note]));
     return sendCsv(res, 'movements', rows);
   }
@@ -639,8 +644,10 @@ async function api(req, res, url) {
     return sendCsv(res, 'invoice-lines', rows);
   }
   if (p === '/api/export/purchases.csv') {
-    const rows = [['采购单号', '日期', '状态', '供应商', '供应商单号', 'SKU', '商品', '数量', '进货价(不含GST)', '金额']];
-    db.purchases.forEach((po) => po.lines.forEach((l) => rows.push([po.no, po.date, po.status === 'void' ? '已作废' : '已入库', po.supplier?.name || '', po.supplierRef, l.sku, l.name, l.qty, l.unitCost, l.amount])));
+    const rows = [englishCsv
+      ? ['Purchase number', 'Date', 'Status', 'Supplier', 'Supplier reference', 'SKU', 'Item', 'Quantity', 'Unit cost (ex GST)', 'Amount']
+      : ['采购单号', '日期', '状态', '供应商', '供应商单号', 'SKU', '商品', '数量', '进货价(不含GST)', '金额']];
+    db.purchases.forEach((po) => po.lines.forEach((l) => rows.push([po.no, po.date, po.status === 'void' ? (englishCsv ? 'Void' : '已作废') : (englishCsv ? 'Received' : '已入库'), po.supplier?.name || '', po.supplierRef, l.sku, l.name, l.qty, l.unitCost, l.amount])));
     return sendCsv(res, 'purchases', rows);
   }
   if (p === '/api/backup' && m === 'GET') {
@@ -691,6 +698,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`库存管理已启动: http://localhost:${PORT}`);
+  console.log(`但丁进销存已启动: http://localhost:${PORT}`);
   if (!PASSWORD) console.warn('⚠️  未设置 APP_PASSWORD，任何人都可访问。公网部署前请务必设置！');
 });
