@@ -119,12 +119,34 @@ const EN = {
   '上一张': 'Previous image', '下一张': 'Next image',
   '采购': 'Reorder', '初始库存': 'Opening stock', '账期天数': 'Payment terms (days)', '税率': 'Tax rate',
   '收款金额': 'Payment amount', '进货价': 'unit cost', '折扣': 'discount',
+  '批量导入': 'Bulk import', '批量导入物品': 'Bulk import items', '选择 CSV 文件…': 'Choose CSV file…',
+  '…或在此粘贴表格内容（第一行为表头）': '…or paste the table here (first row is the header)',
+  'SKU（无 SKU 时按名称）已存在的物品': 'Items that already exist (matched by SKU, or by name without a SKU)',
+  '跳过': 'Skip', '更新资料': 'Update details',
+  '同时按表格「数量」更新已有物品库存（记为盘点）': 'Also update stock of existing items from the Quantity column (recorded as a stocktake)',
+  '新物品的「数量」会记为入库；更新已有物品时，空白单元格保留原值。': 'Quantity for new items is recorded as stock in. When updating existing items, blank cells keep the current value.',
+  '预览': 'Preview', '确认导入': 'Import', '新增': 'New', '更新': 'Update', '有误': 'Error', '已存在': 'Already exists',
+  '行': 'Row', '说明': 'Details', '最低库存': 'Minimum stock', '免GST': 'GST-free',
+  '有误的行不会导入': 'Rows with errors will not be imported',
+  '请先选择文件或粘贴表格内容': 'Choose a file or paste a table first',
+  '没有找到「名称」列，请确认第一行是表头（可下载模板参考）': 'No Name column found. Make sure the first row is the header (see the template).',
+  '表格中没有数据行': 'The table has no data rows',
+  '请在 Excel 中「另存为 CSV（UTF-8）」后再导入，或直接复制表格粘贴': 'In Excel, use Save As → CSV UTF-8 before importing, or copy and paste the table',
+  '没有可导入的数据': 'Nothing to import', '批量导入盘点': 'Bulk import stocktake',
 };
 
 // 服务端报错里的字段名，如「第 2 行单价」
 const trField = (f) => EN[f] || f.replace(/^第 (\d+) 行(.+)$/, (_, row, x) => `Row ${row} ${(EN[x] || x).toLowerCase()}`);
 
 const DYNAMIC_EN = [
+  [/^识别到的列：(.+)$/, (_, cols) => `Columns found: ${cols.split('、').map(tr).join(', ')}`],
+  [/^(新增|更新|跳过|有误) (\d+)$/, (_, label, n) => `${EN[label]} ${n}`],
+  [/^库存 (\d+) → (\d+)$/, (_, from, to) => `Stock ${from} → ${to}`],
+  [/^仅显示前 (\d+) 行，共 (\d+) 行$/, (_, shown, total) => `Showing first ${shown} of ${total} rows`],
+  [/^导入完成：新增 (\d+)，更新 (\d+)，跳过 (\d+)(?:，(\d+) 行有误未导入)?$/, (_, c, u, s, e) => `Import complete: ${c} new, ${u} updated, ${s} skipped${e ? `, ${e} rows with errors not imported` : ''}`],
+  [/^一次最多导入 (\d+) 行$/, (_, n) => `Up to ${n} rows per import`],
+  [/^与第 (\d+) 行重复$/, (_, n) => `Duplicate of row ${n}`],
+  [/^与第 (\d+) 行是同一物品$/, (_, n) => `Same item as row ${n}`],
   [/^逾期 (\d+) 天$/, (_, n) => `Overdue ${n} days`],
   [/^最低 (\d+)(.*)$/, (_, n, unit) => `Minimum ${n}${unit ? ' ' + tr(unit) : ''}`],
   [/^当前库存：(\d+) (.*)$/, (_, n, unit) => `Current stock: ${n} ${tr(unit)}`],
@@ -221,7 +243,8 @@ function translateNode(node) {
 
 document.documentElement.lang = UI_LANG === 'en' ? 'en-AU' : 'zh-CN';
 document.title = tr(document.title);
-if (UI_LANG === 'en') document.querySelectorAll('a[href^="/api/export/"]').forEach((link) => { link.href += '?lang=en'; });
+document.querySelectorAll('[data-lang]').forEach((el) => { el.hidden = el.dataset.lang !== UI_LANG; });
+if (UI_LANG === 'en') document.querySelectorAll('a[href^="/api/export/"], a[href^="/api/import/"]').forEach((link) => { link.href += '?lang=en'; });
 document.querySelectorAll('.lang-select').forEach((select) => {
   select.value = UI_LANG;
   select.addEventListener('change', () => {

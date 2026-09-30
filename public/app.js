@@ -288,9 +288,9 @@ const IMPORT_COLS = {
   unit: ['单位', 'unit', 'uom'],
   location: ['库位', '位置', 'location', 'bin'],
   qty: ['数量', '初始数量', '库存', '库存数量', 'qty', 'quantity', 'stock', 'onhand'],
-  minQty: ['最低库存', '安全库存', 'minqty', 'min', 'reorderlevel', 'reorderpoint'],
+  minQty: ['最低库存', '安全库存', 'minqty', 'min', 'minimumstock', 'reorderlevel', 'reorderpoint'],
   price: ['成本价', '成本', '进货价', '进价', 'cost', 'costprice', 'unitcost'],
-  salePrice: ['默认售价', '售价', '销售价', '零售价', 'saleprice', 'sellprice', 'sellingprice', 'price'],
+  salePrice: ['默认售价', '售价', '销售价', '零售价', 'saleprice', 'defaultsaleprice', 'sellprice', 'sellingprice', 'price'],
   gstFree: ['免gst', '免税', 'gstfree'],
   note: ['备注', '说明', 'note', 'notes', 'remark', 'remarks'],
 };

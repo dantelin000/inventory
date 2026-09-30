@@ -534,6 +534,19 @@ async function api(req, res, url) {
   if (p === '/api/items/import' && m === 'POST') {
     return send(res, 200, importItems(await readBody(req, 20 * 1024 * 1024)));
   }
+  const englishCsv = url.searchParams.get('lang') === 'en';
+  if ((p === '/api/import/items-template.csv' || p === '/api/import/items-sample.csv') && englishCsv) {
+    const rows = [['SKU', 'Name', 'Category', 'Unit', 'Location', 'Quantity', 'Minimum stock', 'Cost price', 'Default sale price', 'GST-free', 'Notes']];
+    if (p.endsWith('sample.csv')) {
+      rows.push(
+        ['HW-001', 'Stainless screw M6x20', 'Hardware', 'box', 'A1-01', 50, 10, 3.25, 6.5, '', '100 per box'],
+        ['HW-002', 'Hex nut M6', 'Hardware', 'box', 'A1-02', 30, 10, 1.8, 3.9, '', ''],
+        ['FD-001', 'Fresh apples', 'Food', 'kg', 'Cool room', 20, 5, 2.5, 4.99, 'Y', 'GST-free item'],
+        ['', 'Shipping carton (large)', 'Packaging', 'each', '', 100, 20, 0.85, '', '', 'Items without a SKU are matched by name'],
+      );
+    }
+    return sendCsv(res, p.endsWith('sample.csv') ? 'items-sample' : 'items-template', rows);
+  }
   if (p === '/api/import/items-template.csv' || p === '/api/import/items-sample.csv') {
     const rows = [['SKU', '名称', '分类', '单位', '库位', '数量', '最低库存', '成本价', '默认售价', '免GST', '备注']];
     if (p.endsWith('sample.csv')) {
@@ -710,7 +723,6 @@ async function api(req, res, url) {
   }
 
   // ----- 导出 -----
-  const englishCsv = url.searchParams.get('lang') === 'en';
   if (p === '/api/export/items.csv') {
     const rows = [englishCsv
       ? ['SKU', 'Name', 'Category', 'Unit', 'Location', 'Quantity', 'Minimum stock', 'Cost price', 'Default sale price', 'GST-free', 'Inventory cost value', 'Notes']
