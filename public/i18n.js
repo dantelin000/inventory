@@ -1,7 +1,9 @@
 'use strict';
 
 // UI language is local to this browser. Stored inventory data is never translated.
-const UI_LANG = localStorage.getItem('inventory-language') === 'en' ? 'en' : 'zh';
+const UI_LANG = (() => {
+  try { return localStorage.getItem('inventory-language') === 'en' ? 'en' : 'zh'; } catch { return 'zh'; }
+})();
 const EN = {
   '但丁进销存': '但丁进销存', '📦 但丁进销存': '📦 但丁进销存', '访问密码': 'Access password', '登录': 'Sign in',
   '概览': 'Dashboard', '物品': 'Items', '销售发票': 'Sales invoices', '客户/应收': 'Customers / receivables',
@@ -115,17 +117,23 @@ const EN = {
   '可选，如客户 PO 号': 'Optional, e.g. customer PO number',
   '交货说明、付款说明…': 'Delivery or payment instructions…',
   '上一张': 'Previous image', '下一张': 'Next image',
+  '采购': 'Reorder', '初始库存': 'Opening stock', '账期天数': 'Payment terms (days)', '税率': 'Tax rate',
+  '收款金额': 'Payment amount', '进货价': 'unit cost', '折扣': 'discount',
 };
+
+// 服务端报错里的字段名，如「第 2 行单价」
+const trField = (f) => EN[f] || f.replace(/^第 (\d+) 行(.+)$/, (_, row, x) => `Row ${row} ${(EN[x] || x).toLowerCase()}`);
 
 const DYNAMIC_EN = [
   [/^逾期 (\d+) 天$/, (_, n) => `Overdue ${n} days`],
-  [/^最低 (\d+)(.*)$/, (_, n, unit) => `Minimum ${n}${tr(unit)}`],
+  [/^最低 (\d+)(.*)$/, (_, n, unit) => `Minimum ${n}${unit ? ' ' + tr(unit) : ''}`],
   [/^当前库存：(\d+) (.*)$/, (_, n, unit) => `Current stock: ${n} ${tr(unit)}`],
   [/^(.+) · 当前 (\d+) (.+) · 成本价 (.+)$/, (_, name, qty, unit, cost) => `${name} · Current ${qty} ${tr(unit)} · Cost ${cost}`],
   [/^留空使用默认 (\d+) 天$/, (_, n) => `Leave blank to use default (${n} days)`],
   [/^(\d+) 天$/, (_, n) => `${n} days`],
+  [/^(-?\d+(?:\.\d+)?) (\S+)$/, (_, n, unit) => `${n} ${tr(unit)}`], // 单据里的「1 箱」
   [/^账期 (\d+) 天(.*)$/, (_, n, rest) => `Terms: ${n} days${rest}`],
-  [/^库存不足（当前 (\d+)(.*)）$/, (_, n, unit) => `Insufficient stock (available: ${n}${unit})`],
+  [/^库存不足（当前 (\d+)(.*)）$/, (_, n, unit) => `Insufficient stock (available: ${n}${unit ? ' ' + tr(unit) : ''})`],
   [/^(.+)（库存 (\d+)(.*)）$/, (_, name, n, unit) => `${name} (stock: ${n} ${tr(unit)})`],
   [/^总计（含 (.+)）$/, (_, tax) => `Total (incl. ${tax})`],
   [/^其中 (.+)$/, (_, tax) => `Includes ${tax}`],
@@ -145,6 +153,7 @@ const DYNAMIC_EN = [
   [/^已恢复：(\d+) 个物品，(\d+) 张发票，(\d+) 张采购单$/, (_, items, invoices, purchases) => `Restored: ${items} items, ${invoices} invoices, ${purchases} purchases`],
   [/^已开具 (.+)，库存已扣减$/, (_, no) => `Created ${no}; stock deducted`],
   [/^(.+) 已入库$/, (_, no) => `${no} received`],
+  [/^作废于 (.+?)(?:：(.*))?（成本价不会自动恢复）$/, (_, when, reason) => `Voided at ${when}${reason ? ': ' + reason : ''} (cost prices are not restored automatically)`],
   [/^作废于 (.+)$/, (_, when) => `Voided at ${when}`],
   [/^成本价更新方式：$/, () => 'Cost update method:'],
   [/^确定删除「(.+)」？历史单据和流水会保留。$/, (_, name) => `Delete “${name}”? Historical documents and movements will remain.`],
@@ -155,13 +164,14 @@ const DYNAMIC_EN = [
   [/^每个物品最多 (\d+) 张图片，已忽略多余的 (\d+) 张$/, (_, max, extra) => `Maximum ${max} images per item; ${extra} extra images ignored`],
   [/^无法读取图片「(.+)」，请换成 JPG \/ PNG 格式$/, (_, name) => `Could not read “${name}”. Try JPG or PNG.`],
   [/^恢复失败：(.*)$/, (_, reason) => `Restore failed: ${tr(reason)}`],
+  [/^(客户|供应商)名称不能为空$/, (_, label) => `${label === '客户' ? 'Customer' : 'Supplier'} name is required`],
   [/^(物品|客户|供应商|发票|采购单|图片)不存在$/, (_, label) => `${EN[label] || label} not found`],
   [/^该(客户|供应商)已有单据，不能删除$/, (_, label) => `Cannot delete this ${label === '客户' ? 'customer' : 'supplier'} because it has documents`],
-  [/^(.+) 必须是 (.+) ~ (.+) 之间的数字$/, (_, field, min, max) => `${EN[field] || field} must be a number between ${min} and ${max}`],
+  [/^(.+) 必须是 (.+) ~ (.+) 之间的数字$/, (_, field, min, max) => `${trField(field)} must be a number between ${min} and ${max}`],
   [/^编码 (.+) 已被「(.+)」使用$/, (_, sku, name) => `SKU ${sku} is already used by “${name}”`],
   [/^「(.+)」库存不足：当前 (.+)，无法出库 (.+)$/, (_, name, available, requested) => `Insufficient stock for “${name}”: ${available} available; cannot take out ${requested}`],
   [/^「(.+)」库存不足：当前 (.+)，(.+)需要 (.+)$/, (_, name, available, action, requested) => `Insufficient stock for “${name}”: ${available} available; ${action} needs ${requested}`],
-  [/^第 (\d+) 行(.+)必须大于 0$/, (_, row, field) => `Row ${row}: ${EN[field] || field} must be greater than 0`],
+  [/^第 (\d+) 行(.+)必须大于 0$/, (_, row, field) => `Row ${row}: ${trField(field)} must be greater than 0`],
   [/^收款金额超过未收余额 (.+)$/, (_, balance) => `Payment exceeds the outstanding balance of ${balance}`],
   [/^每个物品最多 (\d+) 张图片$/, (_, max) => `Maximum ${max} images per item`],
   [/^(.+) 必须是 JPEG \/ PNG \/ WebP 图片$/, (_, field) => `${EN[field] || field} must be a JPEG, PNG or WebP image`],
@@ -215,7 +225,7 @@ if (UI_LANG === 'en') document.querySelectorAll('a[href^="/api/export/"]').forEa
 document.querySelectorAll('.lang-select').forEach((select) => {
   select.value = UI_LANG;
   select.addEventListener('change', () => {
-    localStorage.setItem('inventory-language', select.value);
+    try { localStorage.setItem('inventory-language', select.value); } catch {}
     location.reload();
   });
 });
