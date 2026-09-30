@@ -1,7 +1,7 @@
 {
-  "name": "inventory",
-  "version": "1.0.0",
-  "description": "轻量库存管理（零依赖 Node.js + 单页 HTML）",
+  "name": "dante-jinxiaocun",
+  "version": "1.1.0",
+  "description": "但丁进销存：支持中英切换的零依赖网页进销存系统",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

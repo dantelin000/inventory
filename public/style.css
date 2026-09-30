@@ -18,6 +18,10 @@ a { color: inherit; }
 header { background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
 .bar { max-width: 1280px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; gap: 16px; height: 56px; }
 .brand { font-weight: 700; font-size: 16px; white-space: nowrap; }
+.language-picker { display: flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.language-picker select { width: auto; min-width: 84px; padding: 5px 7px; }
+#login .language-picker { justify-content: flex-end; margin-bottom: 12px; }
+@media (max-width: 760px) { .bar { flex-wrap: wrap; height: auto; min-height: 56px; padding-top: 8px; padding-bottom: 8px; gap: 6px 10px; } nav { order: 3; flex-basis: 100%; } }
 nav { display: flex; gap: 2px; flex: 1; overflow-x: auto; scrollbar-width: none; }
 nav button { background: none; border: 0; padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--muted); white-space: nowrap; }
 nav button.active { background: var(--primary-weak); color: var(--primary); font-weight: 600; }
