@@ -1,4 +1,4 @@
-// 轻量库存管理 —— 零依赖 Node.js 服务端
+// 但丁进销存 —— 零依赖 Node.js 服务端
 // 数据保存在 DATA_DIR/db.json，图片保存在 DATA_DIR/images/；设置 APP_PASSWORD 后需要登录才能访问。
 'use strict';
 
@@ -698,6 +698,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`库存管理已启动: http://localhost:${PORT}`);
+  console.log(`但丁进销存已启动: http://localhost:${PORT}`);
   if (!PASSWORD) console.warn('⚠️  未设置 APP_PASSWORD，任何人都可访问。公网部署前请务必设置！');
 });
