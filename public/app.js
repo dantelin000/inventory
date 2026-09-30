@@ -279,6 +279,162 @@ $('#delItemBtn').onclick = async () => {
   catch (err) { toast(err.message); }
 };
 
+// ---------- 批量导入物品 ----------
+// 表头别名（小写、去空格和括号说明后匹配），兼容本系统导出的「物品清单」和常见英文表头
+const IMPORT_COLS = {
+  sku: ['sku', '编码', 'sku/编码', '货号', 'code', 'itemcode', 'productcode'],
+  name: ['名称', '物品', '物品名称', '商品', '商品名称', '产品', '产品名称', 'name', 'itemname', 'productname', 'product', 'item'],
+  category: ['分类', '类别', 'category'],
+  unit: ['单位', 'unit', 'uom'],
+  location: ['库位', '位置', 'location', 'bin'],
+  qty: ['数量', '初始数量', '库存', '库存数量', 'qty', 'quantity', 'stock', 'onhand'],
+  minQty: ['最低库存', '安全库存', 'minqty', 'min', 'minimumstock', 'reorderlevel', 'reorderpoint'],
+  price: ['成本价', '成本', '进货价', '进价', 'cost', 'costprice', 'unitcost'],
+  salePrice: ['默认售价', '售价', '销售价', '零售价', 'saleprice', 'defaultsaleprice', 'sellprice', 'sellingprice', 'price'],
+  gstFree: ['免gst', '免税', 'gstfree'],
+  note: ['备注', '说明', 'note', 'notes', 'remark', 'remarks'],
+};
+const IMPORT_LABEL = { sku: 'SKU', name: '名称', category: '分类', unit: '单位', location: '库位', qty: '数量', minQty: '最低库存', price: '成本价', salePrice: '默认售价', gstFree: '免GST', note: '备注' };
+const normHead = (s) => String(s).toLowerCase().replace(/[（(][^）)]*[）)]/g, '').replace(/[\s*_\-]/g, '');
+const HEAD_MAP = new Map(Object.entries(IMPORT_COLS).flatMap(([k, list]) => list.map((a) => [a, k])));
+
+// 解析 CSV / TSV（支持引号、单元格内换行、BOM；自动识别逗号、分号或 Tab 分隔）
+function parseCsv(text) {
+  text = text.replace(/^﻿/, '');
+  const first = text.split(/\r?\n/, 1)[0];
+  const delim = first.includes('\t') ? '\t' : first.split(';').length > first.split(',').length ? ';' : ',';
+  const rows = [];
+  let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c !== '"') cell += c;
+      else if (text[i + 1] === '"') { cell += '"'; i++; }
+      else quoted = false;
+    } else if (c === '"' && cell === '') quoted = true;
+    else if (c === delim) { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); rows.push(row); row = []; cell = '';
+    } else cell += c;
+  }
+  if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+
+// 表格文本 → 导入行；返回 { rows, cols } 或 { error }
+function readImportTable(text) {
+  const table = parseCsv(text);
+  const headIdx = table.findIndex((r) => r.some((c) => c.trim()));
+  if (headIdx < 0) return { error: '请先选择文件或粘贴表格内容' };
+  const cols = {};
+  table[headIdx].forEach((h, n) => { const k = HEAD_MAP.get(normHead(h)); if (k && !(k in cols)) cols[k] = n; });
+  if (!('name' in cols)) return { error: '没有找到「名称」列，请确认第一行是表头（可下载模板参考）' };
+  const rows = [];
+  table.slice(headIdx + 1).forEach((r, n) => {
+    if (!r.some((c) => c.trim())) return;
+    const row = { line: headIdx + n + 2 };
+    Object.entries(cols).forEach(([k, i]) => { row[k] = (r[i] ?? '').trim(); });
+    rows.push(row);
+  });
+  if (!rows.length) return { error: '表格中没有数据行' };
+  return { rows, cols };
+}
+
+let importRows = null;
+$('#importItemsBtn').onclick = () => {
+  $('#importForm').reset();
+  $('#importFileName').textContent = '';
+  resetImportPreview();
+  updateImportOpts();
+  $('#importDlg').showModal();
+};
+function resetImportPreview(html = '') {
+  importRows = null;
+  $('#importGo').disabled = true;
+  $('#importPreview').innerHTML = html;
+}
+function updateImportOpts() {
+  $('#importSetQtyWrap').classList.toggle('hidden', $('#importForm').mode.value !== 'update');
+}
+function importOpts() {
+  const f = $('#importForm');
+  return { mode: f.mode.value, setQty: f.mode.value === 'update' && f.setQty.checked };
+}
+$('#importFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  if (/\.xlsx?$/i.test(file.name)) return toast('请在 Excel 中「另存为 CSV（UTF-8）」后再导入，或直接复制表格粘贴');
+  $('#importFileName').textContent = file.name;
+  $('#importText').value = await file.text();
+  previewImport();
+});
+$('#importText').addEventListener('input', () => resetImportPreview());
+$('#importForm').addEventListener('change', (e) => {
+  if (e.target.name === 'mode' || e.target.name === 'setQty') { updateImportOpts(); if ($('#importText').value.trim()) previewImport(); }
+});
+$('#importPreviewBtn').onclick = () => previewImport();
+
+async function previewImport() {
+  const t = readImportTable($('#importText').value);
+  if (t.error) return resetImportPreview(`<p class="stock-warn">${esc(t.error)}</p>`);
+  try {
+    const r = await api('/api/items/import', { method: 'POST', body: { rows: t.rows, ...importOpts(), dryRun: true } });
+    renderImportPreview(r, t);
+    importRows = t.rows;
+    $('#importGo').disabled = !(r.summary.create + r.summary.update);
+  } catch (err) { resetImportPreview(`<p class="stock-warn">${esc(err.message)}</p>`); }
+}
+
+const IMPORT_ACT = { create: ['in', '新增'], update: ['adjust', '更新'], skip: ['void', '跳过'], error: ['low', '有误'] };
+const MAX_PREVIEW = 500;
+function renderImportPreview(r, { rows, cols }) {
+  const s = r.summary;
+  const src = new Map(rows.map((x) => [x.line, x]));
+  const cell = (row, k) => esc(src.get(row.line)?.[k] ?? '') || '<span class="muted">—</span>';
+  $('#importPreview').innerHTML = `
+    <div class="muted small" style="margin-bottom:6px">识别到的列：${Object.keys(cols).map((k) => IMPORT_LABEL[k]).join('、')}</div>
+    <div style="margin-bottom:8px">
+      <span class="tag in">新增 ${s.create}</span> <span class="tag adjust">更新 ${s.update}</span>
+      <span class="tag void">跳过 ${s.skip}</span> <span class="tag low">有误 ${s.error}</span>
+      ${s.error ? '<span class="stock-warn">　有误的行不会导入</span>' : ''}
+    </div>
+    <div class="table-wrap" style="max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:8px">
+      <table>
+        <thead><tr><th class="num">行</th><th>状态</th><th>SKU</th><th>名称</th><th class="hide-sm">分类</th><th class="num">数量</th><th class="num hide-sm">成本价</th><th class="num hide-sm">售价</th><th>说明</th></tr></thead>
+        <tbody>${r.rows.slice(0, MAX_PREVIEW).map((x) => `
+          <tr>
+            <td class="num muted">${x.line}</td>
+            <td><span class="tag ${IMPORT_ACT[x.action][0]}">${IMPORT_ACT[x.action][1]}</span></td>
+            <td>${esc(x.sku) || '<span class="muted">—</span>'}</td>
+            <td>${esc(x.name) || '<span class="muted">—</span>'}</td>
+            <td class="hide-sm">${cell(x, 'category')}</td>
+            <td class="num">${cell(x, 'qty')}</td>
+            <td class="num hide-sm">${cell(x, 'price')}</td>
+            <td class="num hide-sm">${cell(x, 'salePrice')}</td>
+            <td class="wrap small">${x.error ? `<span class="stock-warn">${esc(x.error)}</span>`
+              : x.action === 'skip' ? '<span class="muted">已存在</span>'
+              : x.qtyBefore !== undefined ? `<span class="muted">库存 ${x.qtyBefore} → ${x.qty}</span>` : ''}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>
+    ${r.rows.length > MAX_PREVIEW ? `<p class="hint">仅显示前 ${MAX_PREVIEW} 行，共 ${r.rows.length} 行</p>` : ''}`;
+}
+$('#importForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!importRows) return;
+  const btn = $('#importGo');
+  btn.disabled = true;
+  try {
+    const r = await api('/api/items/import', { method: 'POST', body: { rows: importRows, ...importOpts() } });
+    const s = r.summary;
+    $('#importDlg').close();
+    toast(`导入完成：新增 ${s.create}，更新 ${s.update}，跳过 ${s.skip}` + (s.error ? `，${s.error} 行有误未导入` : ''));
+    await reload();
+  } catch (err) { toast(err.message); btn.disabled = false; }
+});
+
 // 图片编辑
 function renderImgs() {
   $('#imgGrid').innerHTML = imgs.map((x, n) => `
