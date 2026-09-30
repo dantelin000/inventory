@@ -3,7 +3,7 @@
 // UI language is local to this browser. Stored inventory data is never translated.
 const UI_LANG = localStorage.getItem('inventory-language') === 'en' ? 'en' : 'zh';
 const EN = {
-  '库存管理': 'Inventory', '📦 库存管理': '📦 Inventory', '访问密码': 'Access password', '登录': 'Sign in',
+  '但丁进销存': '但丁进销存', '📦 但丁进销存': '📦 但丁进销存', '访问密码': 'Access password', '登录': 'Sign in',
   '概览': 'Dashboard', '物品': 'Items', '销售发票': 'Sales invoices', '客户/应收': 'Customers / receivables',
   '采购入库': 'Purchases', '供应商': 'Suppliers', '库存流水': 'Stock movements', '设置': 'Settings', '退出': 'Sign out',
   '本月销售额（不含 GST）': 'Sales this month (ex GST)', '本月毛利': 'Gross profit this month',
