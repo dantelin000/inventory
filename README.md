@@ -36,9 +36,13 @@ Dante Inventory is a web-based inventory and invoicing system: **a single-page H
 
 版本号格式为 `主版本.功能版本.修复版本`：加新功能升第二位，只修 bug 升第三位。每次更新都要改 `package.json` 里的 `version`，并在下面加一段同版本号的说明；合并进 main 后会自动在 GitHub 发布同名版本（Releases 页面）。
 
+### v1.2.2（2026-10-01）
+
+- README 开头标题和介绍改为先英文、后中文。
+
 ### v1.2.1（2026-10-01）
 
-- README 开头和 `package.json` 的项目描述改为先英文、后中文。
+- `package.json` 的项目描述改为先英文、后中文。
 
 ### v1.2.0（2026-09-30）
 
