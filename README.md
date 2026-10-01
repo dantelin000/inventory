@@ -1,4 +1,6 @@
-# 📦 但丁进销存
+# 📦 Dante Inventory 但丁进销存
+
+Dante Inventory is a web-based inventory and invoicing system: **a single-page HTML frontend + a zero-dependency Node.js backend**, with all data stored in one JSON file. No database and no `npm install` needed — copy it to a server and run. The UI can be switched between Chinese and English.
 
 但丁进销存是一个网页版进销存系统：**单页 HTML 前端 + 零依赖 Node.js 后端**，数据存储在一个 JSON 文件中。不需要数据库，也不需要 `npm install`，拷到服务器上就能运行。
 
@@ -33,6 +35,10 @@
 ## 更新记录
 
 版本号格式为 `主版本.功能版本.修复版本`：加新功能升第二位，只修 bug 升第三位。每次更新都要改 `package.json` 里的 `version`，并在下面加一段同版本号的说明；合并进 main 后会自动在 GitHub 发布同名版本（Releases 页面）。
+
+### v1.2.2（2026-10-01）
+
+- README 开头标题和介绍改为先英文、后中文。
 
 ### v1.2.1（2026-10-01）
 
