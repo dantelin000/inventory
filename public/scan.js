@@ -147,12 +147,40 @@ function flattenLight(src) {
   }
   let lo = 0;
   for (let acc = hist[0]; lo < 250 && acc < w * h * 0.01; acc += hist[++lo]);
+  for (let i = 0; i < w * h; i++) out[i] = Math.max(0, ((out[i] - lo) * 255) / (255 - lo));
+  removeLines(out, w, h);
   for (let i = 0; i < w * h; i++) {
-    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = ((out[i] - lo) * 255) / (255 - lo);
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = out[i];
     d[i * 4 + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
   return c;
+}
+
+// 擦掉表格框线：连续很长的深色横线 / 竖线涂白（连同两侧 1 像素的虚边）。
+// 带框线的单据里，紧贴竖线的数字和被横线夹住的整行很容易被 OCR 认成乱码；文字笔画都很短，不会被误擦。
+function removeLines(px, w, h) {
+  const mask = new Uint8Array(w * h);
+  const minH = Math.round(w / 20), minV = Math.round(h / 25);
+  const dark = (x, y) => x >= 0 && x < w && y >= 0 && y < h && px[y * w + x] < 160;
+  // 线条常有轻微倾斜：上下（或左右）相邻 1 像素内有深色就算线没断
+  for (let y = 0; y < h; y++) {
+    for (let x = 0, run = 0; x <= w; x++) {
+      if (x < w && (dark(x, y) || dark(x, y - 1) || dark(x, y + 1))) { run++; continue; }
+      if (run >= minH) for (let yy = Math.max(0, y - 1); yy <= Math.min(h - 1, y + 1); yy++) mask.fill(1, yy * w + x - run, yy * w + x);
+      run = 0;
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0, run = 0; y <= h; y++) {
+      if (y < h && (dark(x, y) || dark(x - 1, y) || dark(x + 1, y))) { run++; continue; }
+      if (run >= minV) {
+        for (let yy = y - run; yy < y; yy++) for (let xx = Math.max(0, x - 1); xx <= Math.min(w - 1, x + 1); xx++) mask[yy * w + xx] = 1;
+      }
+      run = 0;
+    }
+  }
+  for (let i = 0; i < w * h; i++) if (mask[i]) px[i] = 255;
 }
 
 // 对还没有文字的页面做 OCR（英文）
@@ -189,7 +217,7 @@ const SCAN_UNIT = /^(ea|each|pc|pcs|pce|unit|units|bx|box|ctn|carton|pk|pack|pkt
 const SCAN_TOTAL_START = /^[^a-z0-9]*(sub\s*-?\s*total|total|gst|tax|freight|delivery|shipping|postage|handling|balance|amount\s+(due|payable)|rounding)\b/i;
 
 function scanNumber(tok) {
-  let t = tok.replace(/^[($]+|\)+$/g, '').replace(/^\$/, '');
+  let t = tok.replace(/^[($£€¥]+|\)+$/g, '').replace(/^S(?=\d+\.\d\d$)/, ''); // OCR 常把 $ 认成 £ 或 S
   if (/\d/.test(t) && /^[\dOolI.,]+$/.test(t)) t = t.replace(/[Oo]/g, '0').replace(/[lI]/g, '1'); // OCR 常把 0/1 认成 O/l
   if (/^\d+,\d{2}$/.test(t)) t = t.replace(',', '.'); // 小数点认成逗号
   if (!/^(\d{1,3}(,\d{3})+|\d+)(\.\d+)?$/.test(t)) return null;
@@ -199,7 +227,10 @@ function scanNumber(tok) {
 function scanTokens(line) {
   return line.trim().split(/\s+/).map((t) => t.replace(/^["'`|:;~_]+|["'`|:;~_]+$/g, '')).filter((t) => /[a-z0-9]/i.test(t)).map((t, i) => {
     const pct = /%$/.test(t);
-    return { t, i, pct, v: scanNumber(pct ? t.slice(0, -1) : t) };
+    const v = scanNumber(pct ? t.slice(0, -1) : t);
+    // OCR 常把金额前的 $ 认成 5 或 8（$0.75 → 50.75），备用值留给 scanRow 用「数量 × 单价 = 金额」验证
+    const alt = !pct && v !== null && /^[58]\d+\.\d\d$/.test(t) ? Number(t.slice(1)) : null;
+    return { t, i, pct, v, alt };
   });
 }
 
@@ -211,27 +242,34 @@ function scanRow(line, order, hasCode) {
   const nums = toks.filter((x) => x.v !== null);
   if (nums.length < 2) return null;
   let best = null;
-  // 金额一般在最后一列，有时后面还跟一列 GST，所以也试倒数第二、三个数
-  for (let a = nums.length - 1; a >= Math.max(1, nums.length - 3); a--) {
-    const amt = nums[a];
-    if (amt.pct) continue;
-    const before = nums.slice(Math.max(0, a - 5), a);
-    for (let i = 0; i < before.length; i++) {
-      for (let j = i + 1; j < before.length; j++) {
-        const [q, p] = order === 'pq' ? [before[j], before[i]] : [before[i], before[j]];
-        if (q.pct || p.pct || q.v <= 0) continue;
-        const discounts = [0, ...before.slice(j + 1).filter((x) => x.v <= 100).map((x) => x.v)]; // 单价和金额之间的折扣列
-        for (const disc of discounts) {
-          if (!near(q.v * p.v * (1 - disc / 100), amt.v, 0.011 + q.v * 0.005)) continue;
-          const score = (Number.isInteger(q.v) ? 4 : 0) + (a === nums.length - 1 ? 2 : 0) + (j === i + 1 ? 1 : 0) + (disc ? 0 : 1);
-          if (!best || score > best.score) best = { q, p, amt, disc, score };
+  const values = (x, fix) => (fix && x.alt !== null ? [x.v, x.alt] : [x.v]);
+  // 先按原样找；找不到再允许把 5 / 8 开头的数字当作 $ 认错（fix）
+  for (const fix of [false, true]) {
+    // 金额一般在最后一列，有时后面还跟一列 GST，所以也试倒数第二、三个数
+    for (let a = nums.length - 1; a >= Math.max(1, nums.length - 3); a--) {
+      const amt = nums[a];
+      if (amt.pct) continue;
+      const before = nums.slice(Math.max(0, a - 5), a);
+      for (let i = 0; i < before.length; i++) {
+        for (let j = i + 1; j < before.length; j++) {
+          const [q, p] = order === 'pq' ? [before[j], before[i]] : [before[i], before[j]];
+          if (q.pct || p.pct || q.v <= 0) continue;
+          const discounts = [0, ...before.slice(j + 1).filter((x) => x.v <= 100).map((x) => x.v)]; // 单价和金额之间的折扣列
+          for (const qv of values(q, fix)) for (const pv of values(p, fix)) for (const av of values(amt, fix)) {
+            for (const disc of discounts) {
+              if (!near(qv * pv * (1 - disc / 100), av, 0.011 + qv * 0.005)) continue;
+              const score = (Number.isInteger(qv) ? 4 : 0) + (a === nums.length - 1 ? 2 : 0) + (j === i + 1 ? 1 : 0) + (disc ? 0 : 1);
+              if (!best || score > best.score) best = { q, p, amt, disc, score, qv, pv, av };
+            }
+          }
         }
       }
     }
+    if (best) break;
   }
   let r;
   if (best) {
-    r = { qty: best.q.v, price: best.p.v, discount: best.disc, amount: best.amt.v, ok: true };
+    r = { qty: best.qv, price: best.pv, discount: best.disc, amount: best.av, ok: true };
   } else {
     // 对不上时按列的位置猜：最后一个数是金额，前面依次是单价、数量（标红让人核对）
     const vals = nums.filter((x) => !x.pct);
@@ -289,13 +327,22 @@ function parseScanText(lines) {
   const text = lines.join('\n');
   const own = String(S().abn || '').replace(/\D/g, '');
   const abn = [...text.matchAll(/\bA\.?B\.?N\.?\s*[:#]?\s*((?:\d\s*){11})/gi)].map((m) => m[1].replace(/\D/g, '')).find((x) => x !== own) || '';
-  const ref = (text.match(/\b(?:invoice|inv|docket|document)\.?[ \t]*(?:no\.?|number|num|#)?[ \t]*[:#.]?[ \t]*([A-Z0-9][A-Z0-9\-/]*\d[A-Z0-9\-/]*)/i) || [])[1] || '';
-  let name = '';
-  for (const l of lines.slice(0, 6)) {
-    name = l.replace(/\b(tax\s+)?invoice\b.*$|\bA\.?B\.?N\b.*$/i, '').split(/\s+/).filter((w) => w.length > 1 && /[a-z]/i.test(w)).join(' ');
-    if (name.length >= 4) break;
+  const refTok = (s) => (s.match(/[A-Z0-9][A-Z0-9\-/]*\d[A-Z0-9\-/]*/gi) || []).filter((x) => x.length >= 4);
+  const labelRe = /\b(?:invoice|inv|docket|document)\.?[ \t]*(?:no\b\.?|number|num|#)[ \t]*[:#.]?/i;
+  const li = lines.findIndex((l) => labelRe.test(l));
+  let ref = '';
+  if (li >= 0) {
+    const after = lines[li].slice(lines[li].search(labelRe)).replace(labelRe, '');
+    const adjacent = [...refTok(lines[li - 1] || ''), ...refTok(lines[li + 1] || '')];
+    const same = refTok(after)[0];
+    ref = (same && adjacent.find((x) => x.length > same.length && x.endsWith(same))) || same || refTok(lines[li - 1] || '').pop() || refTok(lines[li + 1] || '')[0] || '';
   }
-  if (name.length < 4) name = '';
+  if (!ref) ref = (text.match(/\b(?:invoice|inv|docket|document)\.?[ \t]*(?:no\.?|number|num|#)?[ \t]*[:#.]?[ \t]*([A-Z0-9][A-Z0-9\-/]*\d[A-Z0-9\-/]*)/i) || [])[1] || '';
+  // 供应商名称：优先找带公司后缀（Pty Ltd 等）的行，否则取开头第一行像名称的文字（至少两个 3 个字母以上的词）
+  const nameOf = (l) => l.replace(/\b(tax\s+)?invoice\b.*$|\bA\.?B\.?N\b.*$/i, '').split(/\s+/).filter((w) => w === '&' || (w.length > 1 && /[a-z]/i.test(w))).join(' ');
+  const top = lines.slice(0, headIdx > 0 ? Math.min(headIdx, 10) : 10).map(nameOf); // 公司名在表格上方
+  let name = top.find((n) => /\b(pty|ltd|limited|p\/l)\b/i.test(n)) || top.find((n) => n.split(' ').filter((w) => /^[a-z]{3,}$/i.test(w)).length >= 2) || '';
+  name = name.replace(/^(.*?\b(pty\.?\s*ltd|limited|p\/l|ltd))\b.*$/i, '$1');
   return { supplier: { name, abn }, ref, rows, totals, incGst: null };
 }
 

@@ -85,18 +85,18 @@ Versions use the format `major.feature.fix`: bump the second number for new feat
 ### v1.3.0（2026-10-07）
 
 - Scan supplier invoices: on the Purchases page, use “📷 Scan supplier invoice” (also inside a new purchase) to choose photos, scans or PDFs. The recognised lines are filled into the purchase; nothing changes stock until you click Receive stock.
-- Free on-device recognition: photos and scanned PDFs are read with English OCR in the browser (Tesseract.js, with shadow removal for phone photos); digital PDFs are read directly (pdf.js). The engine (about 5 MB) is downloaded from the jsDelivr CDN on first use and then cached by the browser.
-- Item lines are found by checking quantity × unit price (less any discount %) against the line amount, so no per-supplier templates are needed; lines that don't add up are highlighted in red, and the total is compared with the invoice subtotal / total.
-- The supplier is found by ABN (or name), the supplier invoice number is filled in, GST-inclusive prices are converted to ex GST, and unmatched lines can be created as new items or added as a new supplier in one click. Item choices are remembered per supplier code, so the next invoice from the same supplier matches automatically.
+- Free on-device recognition: photos and scanned PDFs are read with English OCR in the browser (Tesseract.js); digital PDFs are read directly (pdf.js). Before OCR, shadows in phone photos are evened out and table border lines are erased, since digits touching the lines are otherwise misread. The engine (about 5 MB) is downloaded from the jsDelivr CDN on first use and then cached by the browser.
+- Item lines are found by checking quantity × unit price (less any discount %) against the line amount, so no per-supplier templates are needed. The same check repairs a “$” misread as 5 or 8 (e.g. 50.75 → 0.75) only when the corrected numbers add up; lines that still don't add up are highlighted in red, and the total is compared with the invoice subtotal / total.
+- The supplier is found by ABN (or name), the supplier invoice number is filled in, GST-inclusive prices are converted to ex GST, and unmatched lines can be created as new items or added as a new supplier in one click. Item choices are remembered by the supplier's code and description, so the next invoice from the same supplier matches automatically even if one of them is misread.
 - Optional AI recognition (Settings → AI invoice recognition): works with any OpenAI-compatible API. Text-only models such as DeepSeek receive the OCR text, which costs very little; models that can read images receive the photos. The API key stays on the server and is not included in downloaded backups.
 - The recognised lines can be downloaded as a CSV.
 
 ---
 
 - 识别入货单：在「采购入库」页点「📷 识别入货单」（新建采购单里也有），选择照片、扫描件或 PDF，识别出的商品行会填进采购单；点「确认入库」之前库存不会变化。
-- 免费的本地识别：照片和扫描版 PDF 在浏览器里做英文 OCR（Tesseract.js，并针对手机照片做去阴影处理）；电子版 PDF 直接读取文字（pdf.js）。识别组件约 5 MB，首次使用时从 jsDelivr CDN 下载，之后浏览器会缓存。
-- 不需要按供应商写模板：每行检查「数量 × 单价（扣除折扣%）≈ 金额」来找出商品行，对不上的行标红提示；同时把合计与单据小计 / 总计核对。
-- 按 ABN（或名称）自动选择供应商并填写供应商单号；含 GST 的价格自动换算成不含 GST；没匹配上的行可一键新建为物品，单据上的新供应商也可一键新增。确认入库时会记住每个供应商货号对应的物品，同一供应商的下一张单据自动匹配。
+- 免费的本地识别：照片和扫描版 PDF 在浏览器里做英文 OCR（Tesseract.js）；电子版 PDF 直接读取文字（pdf.js）。OCR 之前先拉平手机照片的阴影，并擦掉表格框线（紧贴框线的数字容易被认错）。识别组件约 5 MB，首次使用时从 jsDelivr CDN 下载，之后浏览器会缓存。
+- 不需要按供应商写模板：每行检查「数量 × 单价（扣除折扣%）≈ 金额」来找出商品行。同一规则还能修正把「$」认成 5 或 8 的情况（如 50.75 → 0.75），只在修正后算得通时才采用；仍然对不上的行标红提示，合计也会与单据小计 / 总计核对。
+- 按 ABN（或名称）自动选择供应商并填写供应商单号；含 GST 的价格自动换算成不含 GST；没匹配上的行可一键新建为物品，单据上的新供应商也可一键新增。确认入库时会按供应商的货号和品名记住对应的物品，同一供应商的下一张单据自动匹配，其中一项认错也能对上。
 - 可选 AI 识别（「设置」→「AI 识别入货单」）：支持任何 OpenAI 兼容接口。DeepSeek 等纯文本模型收到的是 OCR 出的文字，费用很低；能看图片的模型直接收到照片。API Key 只保存在服务器上，不会出现在下载的备份里。
 - 识别结果可以下载为 CSV。
 

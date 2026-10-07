@@ -428,8 +428,10 @@ function createPurchase(body) {
   });
   // 识别单据时带来的「供应商货号 / 品名」：记到物品上，下次同一供应商的单据自动匹配
   body.lines.forEach((l, n) => {
-    const key = str(l.alias, 120);
-    if (key) learnAlias(findItem(lines[n].itemId), supplier ? supplier.id : 0, key);
+    [].concat(l.alias || []).slice(0, 2).forEach((a) => {
+      const key = str(a, 120);
+      if (key) learnAlias(findItem(lines[n].itemId), supplier ? supplier.id : 0, key);
+    });
   });
   db.purchases.push(po);
   return po;

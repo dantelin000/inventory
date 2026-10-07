@@ -936,7 +936,7 @@ $('#poLines').addEventListener('click', (e) => {
     const l = poLines[Number(add.dataset.newitem)];
     openItem(null, {
       noInitQty: true,
-      prefill: { name: l.src.desc || l.src.code, sku: l.src.code, price: l.unitCost },
+      prefill: { name: l.src.desc || l.src.code, sku: l.src.code.replace(/[^\w\-/.]/g, ''), price: l.unitCost },
       onSaved: (it) => { l.itemId = it.id; renderPoLines(); },
     });
   }
@@ -967,7 +967,7 @@ $('#poForm').addEventListener('submit', async (e) => {
     const po = await api('/api/purchases', { method: 'POST', body: {
       supplierId: Number(f.supplierId.value) || null, date: f.date.value, supplierRef: f.supplierRef.value,
       costMethod: f.costMethod.value, withGst: f.withGst.checked, note: f.note.value,
-      lines: poLines.map((l) => ({ itemId: Number(l.itemId), qty: l.qty, unitCost: l.unitCost, alias: l.src?.key || '' })),
+      lines: poLines.map((l) => ({ itemId: Number(l.itemId), qty: l.qty, unitCost: l.unitCost, alias: l.src?.keys || [] })),
     } });
     $('#poDlg').close();
     toast(`${po.no} 已入库`);
@@ -1032,11 +1032,11 @@ function findScanSupplier(r) {
     }) || null;
 }
 
-// 物品：以前确认过的对照（同一供应商的货号 / 品名）→ SKU 与单据货号相同 → 名称完全相同
+// 物品：以前确认过的对照（同一供应商的货号，其次品名；货号认错一个字时还能靠品名对上）→ SKU 与单据货号相同 → 名称完全相同
+const scanKeys = (x) => [...new Set([scanKey(x.code), scanKey(x.desc)].filter(Boolean))];
 function matchScanItem(x, supplierId) {
-  const key = scanKey(x.code || x.desc);
-  if (!key) return null;
-  const alias = (any) => D.items.find((i) => i.aliases?.some((a) => a.key === key && (any || a.supplierId === supplierId)));
+  const keys = scanKeys(x);
+  const alias = (any) => keys.map((k) => D.items.find((i) => i.aliases?.some((a) => a.key === k && (any || a.supplierId === supplierId)))).find(Boolean);
   const code = scanKey(x.code), desc = scanKey(x.desc);
   return alias(false) || (!supplierId && alias(true)) ||
     (code && D.items.find((i) => i.sku && scanKey(i.sku) === code)) ||
@@ -1053,7 +1053,7 @@ function applyScan(r) {
   const supplierId = Number(f.supplierId.value) || 0;
   const lines = r.rows.map((x) => {
     const it = matchScanItem(x, supplierId);
-    return { itemId: it ? it.id : '', qty: x.qty > 0 ? x.qty : 1, unitCost: x.unitCost, src: { code: x.code, desc: x.desc, ok: x.ok, key: scanKey(x.code || x.desc) } };
+    return { itemId: it ? it.id : '', qty: x.qty > 0 ? x.qty : 1, unitCost: x.unitCost, src: { code: x.code, desc: x.desc, ok: x.ok, keys: scanKeys(x) } };
   });
   r.autoMatched = lines.filter((l) => l.itemId).length;
   // 采购单里只有一行空白时直接替换，否则追加到后面
