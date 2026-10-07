@@ -27,6 +27,8 @@ const DEFAULT_SETTINGS = {
   invoicePrefix: 'INV-', poPrefix: 'PO-', paymentTermsDays: 14,
   bankName: '', accountName: '', bsb: '', accountNumber: '', payId: '',
   invoiceFooter: 'Thank you for your business!',
+  // AI 识别入货单：任意 OpenAI 兼容接口（DeepSeek、OpenAI、Gemini、通义千问…），aiVision 表示模型能直接看图片
+  aiUrl: '', aiKey: '', aiModel: '', aiVision: false,
 };
 
 fs.mkdirSync(IMG_DIR, { recursive: true });
@@ -81,6 +83,8 @@ process.on('SIGINT', () => { flush(); process.exit(0); });
 process.on('SIGTERM', () => { flush(); process.exit(0); });
 
 const nextId = () => db.seq++;
+// AI 接口的 Key 只留在服务端，不返回给浏览器，也不写进下载的备份
+const publicSettings = () => { const { aiKey, ...s } = db.settings; return Object.assign(s, { aiKeySet: !!aiKey }); };
 const now = () => new Date().toISOString();
 
 // ---------- 工具 ----------
@@ -422,8 +426,19 @@ function createPurchase(body) {
     }
     recordMovement(item, 'in', l.qty, `采购 ${po.no}${supplier ? ' · ' + supplier.name : ''}`, { purchaseId: po.id });
   });
+  // 识别单据时带来的「供应商货号 / 品名」：记到物品上，下次同一供应商的单据自动匹配
+  body.lines.forEach((l, n) => {
+    const key = str(l.alias, 120);
+    if (key) learnAlias(findItem(lines[n].itemId), supplier ? supplier.id : 0, key);
+  });
   db.purchases.push(po);
   return po;
+}
+
+function learnAlias(item, supplierId, key) {
+  const same = (a) => a.supplierId === supplierId && a.key === key;
+  db.items.forEach((i) => { if (i.aliases?.some(same)) i.aliases = i.aliases.filter((a) => !same(a)); });
+  item.aliases = (item.aliases || []).concat({ supplierId, key }).slice(-100);
 }
 
 function voidPurchase(po, reason) {
@@ -434,6 +449,84 @@ function voidPurchase(po, reason) {
   po.status = 'void';
   po.voidedAt = now();
   po.voidReason = str(reason, 200);
+}
+
+// ---------- AI 识别入货单（OpenAI 兼容接口） ----------
+// 浏览器把照片（模型支持图片时）或本地 OCR / PDF 读出的文字发过来，这里转发给设置里的接口，整理成统一格式返回
+const AI_PROMPT = `You read supplier invoices, tax invoices and delivery dockets for an Australian inventory system.
+The input is either images of the document or text extracted from it. OCR text may contain misread characters: use the column layout and the rule qty x unit price - discount = line amount to correct them.
+Reply with ONLY one JSON object (no markdown, no explanation) in exactly this shape:
+{"supplier":{"name":"","abn":""},"invoiceNo":"","date":"YYYY-MM-DD","pricesIncludeGst":false,
+ "lines":[{"code":"","description":"","qty":0,"unitPrice":0,"discountPct":0,"amount":0}],
+ "subtotal":null,"gst":null,"total":null}
+Rules:
+- supplier is the business that issued the document (the seller), not the Bill To / Ship To customer.
+- One entry in "lines" per product line, in document order. Do not include subtotal, GST, total, freight, delivery or rounding rows.
+- code: the supplier's product code / SKU / item number if printed, otherwise "".
+- qty: quantity supplied. unitPrice: price per unit as printed, before discount. discountPct: line discount percent, 0 if none. amount: line total as printed.
+- pricesIncludeGst: true only if the unit prices and line amounts include GST.
+- Numbers are plain JSON numbers without currency symbols or thousands separators. Use null for a total that is not shown and "" for unknown text.
+- Australian dates are written day first (DD/MM/YYYY); output YYYY-MM-DD.`;
+
+async function scanWithAi(body) {
+  const s = db.settings;
+  if (!s.aiUrl || !s.aiModel) throw new HttpError(400, '请先在「设置」填写 AI 识别接口');
+  const images = (Array.isArray(body.images) ? body.images : []).slice(0, 10).map(String);
+  if (images.some((u) => !/^data:image\/(jpeg|png|webp);base64,/.test(u))) throw new HttpError(400, '图片格式不正确');
+  const text = str(body.text, 60000);
+  if (!images.length && !text) throw new HttpError(400, '没有可识别的内容');
+  const prompt = text ? 'Text read from the document:\n\n' + text : 'The document is attached as images.';
+  // 纯文字时 content 用字符串，兼容不支持图片的模型（如 DeepSeek）
+  const content = images.length ? [{ type: 'text', text: prompt }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))] : prompt;
+  const url = s.aiUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/, '') + '/chat/completions';
+  const request = { model: s.aiModel, messages: [{ role: 'system', content: AI_PROMPT }, { role: 'user', content }], max_tokens: 4096 };
+  let r = await postAi(url, s.aiKey, request);
+  if (r.status === 400 && /max_tokens/i.test(r.error)) { // 个别接口不认 max_tokens 或上限更低，去掉后重试
+    delete request.max_tokens;
+    r = await postAi(url, s.aiKey, request);
+  }
+  if (!r.ok) throw new HttpError(502, `AI 接口返回错误（${r.status}）：${r.error}`);
+  const msg = r.data?.choices?.[0]?.message?.content;
+  return readAiReply(Array.isArray(msg) ? msg.map((x) => x?.text || '').join('') : String(msg || ''));
+}
+
+async function postAi(url, key, body) {
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, key ? { Authorization: 'Bearer ' + key } : {}),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(180000),
+    });
+  } catch (e) {
+    const cause = e.cause?.code || e.cause?.errors?.[0]?.code || e.cause?.message || e.message; // 如 ECONNREFUSED、ENOTFOUND
+    throw new HttpError(502, `无法连接 AI 接口：${e.name === 'TimeoutError' ? '超时' : cause}`);
+  }
+  const raw = await res.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch {}
+  const err = data?.error?.message || (typeof data?.error === 'string' && data.error) || data?.message || raw;
+  return { ok: res.ok, status: res.status, data, error: res.ok ? '' : String(err).slice(0, 300) };
+}
+
+function readAiReply(reply) {
+  const start = reply.indexOf('{');
+  let r = null;
+  try { r = JSON.parse(reply.slice(start, reply.lastIndexOf('}') + 1)); } catch {}
+  if (start < 0 || !r || typeof r !== 'object') throw new HttpError(502, 'AI 返回的内容无法解析，请重试或换一个模型');
+  const n = (v) => { const x = Number(typeof v === 'string' ? v.replace(/[$,\s]/g, '') : v); return v !== null && v !== '' && Number.isFinite(x) ? x : null; };
+  const rows = (Array.isArray(r.lines) ? r.lines : []).slice(0, 200).map((l) => ({
+    code: str(l?.code, 60), desc: str(l?.description, 200),
+    qty: n(l?.qty), price: n(l?.unitPrice), discount: n(l?.discountPct) || 0, amount: n(l?.amount),
+  })).filter((l) => (l.code || l.desc) && (l.qty || l.amount));
+  return {
+    supplier: { name: str(r.supplier?.name, 120), abn: str(r.supplier?.abn, 30) },
+    ref: str(r.invoiceNo, 60), date: isDate(r.date) ? r.date : '',
+    incGst: typeof r.pricesIncludeGst === 'boolean' ? r.pricesIncludeGst : null,
+    totals: { subtotal: n(r.subtotal), gst: n(r.gst), total: n(r.total) },
+    rows,
+  };
 }
 
 // ---------- 图片 ----------
@@ -517,7 +610,7 @@ async function api(req, res, url) {
   if (p === '/api/all' && m === 'GET') {
     return send(res, 200, {
       items: db.items, movements: db.movements.slice(-3000).reverse(), invoices: db.invoices, purchases: db.purchases,
-      customers: db.customers, suppliers: db.suppliers, settings: db.settings,
+      customers: db.customers, suppliers: db.suppliers, settings: publicSettings(),
     });
   }
 
@@ -682,6 +775,9 @@ async function api(req, res, url) {
     save();
     return send(res, 201, po);
   }
+  if (p === '/api/scan/ai' && m === 'POST') {
+    return send(res, 200, await scanWithAi(await readBody(req, 30 * 1024 * 1024)));
+  }
   if ((match = p.match(/^\/api\/purchases\/(\d+)\/void$/)) && m === 'POST') {
     const po = byId(db.purchases, match[1], '采购单');
     voidPurchase(po, (await readBody(req)).reason);
@@ -701,11 +797,16 @@ async function api(req, res, url) {
     if (b.paymentTermsDays !== undefined) s.paymentTermsDays = num(b.paymentTermsDays, '账期天数', { int: true, max: 365 });
     if (b.gstRegistered !== undefined) s.gstRegistered = bool(b.gstRegistered);
     if (b.pricesIncGst !== undefined) s.pricesIncGst = bool(b.pricesIncGst);
+    if (b.aiUrl !== undefined) s.aiUrl = str(b.aiUrl, 300);
+    if (b.aiModel !== undefined) s.aiModel = str(b.aiModel, 120);
+    if (b.aiKey) s.aiKey = str(b.aiKey, 500); // 留空表示不修改
+    if (b.aiVision !== undefined) s.aiVision = bool(b.aiVision);
+    if (!s.aiUrl) s.aiKey = ''; // 清空接口地址即关闭 AI 识别
     s.taxName = s.taxName || 'GST';
     s.invoicePrefix = s.invoicePrefix || 'INV-';
     s.poPrefix = s.poPrefix || 'PO-';
     save();
-    return send(res, 200, s);
+    return send(res, 200, publicSettings());
   }
   if (p === '/api/settings/logo' && m === 'POST') {
     const body = await readBody(req, 6 * 1024 * 1024);
@@ -713,13 +814,13 @@ async function api(req, res, url) {
     if (db.settings.logo) removeImageFiles([db.settings.logo]);
     db.settings.logo = id;
     save();
-    return send(res, 200, db.settings);
+    return send(res, 200, publicSettings());
   }
   if (p === '/api/settings/logo' && m === 'DELETE') {
     if (db.settings.logo) removeImageFiles([db.settings.logo]);
     db.settings.logo = '';
     save();
-    return send(res, 200, db.settings);
+    return send(res, 200, publicSettings());
   }
 
   // ----- 导出 -----
@@ -757,7 +858,7 @@ async function api(req, res, url) {
     return sendCsv(res, 'purchases', rows);
   }
   if (p === '/api/backup' && m === 'GET') {
-    return send(res, 200, db, { 'Content-Disposition': `attachment; filename="inventory-backup-${localDate()}.json"` });
+    return send(res, 200, Object.assign({}, db, { settings: publicSettings() }), { 'Content-Disposition': `attachment; filename="inventory-backup-${localDate()}.json"` });
   }
   if (p === '/api/backup' && m === 'POST') {
     const body = await readBody(req, 50 * 1024 * 1024);
@@ -766,8 +867,11 @@ async function api(req, res, url) {
     next.items.forEach((i) => { i.images = (Array.isArray(i.images) ? i.images : []).filter((id) => IMG_ID.test(id) && fs.existsSync(imgFile(id))); });
     const all = ['items', 'movements', 'invoices', 'purchases', 'customers', 'suppliers'].flatMap((k) => (Array.isArray(next[k]) ? next[k] : []));
     next.seq = Math.max(Number(next.seq) || 1, Math.max(0, ...all.map((x) => x.id || 0)) + 1);
+    const aiKey = db.settings.aiKey; // 备份里不含 Key，恢复时保留当前的
     db = next;
     migrate();
+    delete db.settings.aiKeySet;
+    if (!db.settings.aiKey && db.settings.aiUrl) db.settings.aiKey = aiKey;
     save();
     return send(res, 200, { ok: true, items: db.items.length, invoices: db.invoices.length, purchases: db.purchases.length });
   }
