@@ -1,13 +1,15 @@
 'use strict';
 
-// ---------- 识别入货单：照片 / 扫描件 / PDF → 商品行 ----------
-// 本地识别全部在浏览器里完成（pdf.js 读 PDF，Tesseract.js 做英文 OCR，首次使用从 CDN 下载后由浏览器缓存），服务器不参与；
+// ---------- 识别单据：照片 / 扫描件 / PDF / Excel / CSV → 商品行 ----------
+// 采购入库（供应商入货单）和销售发票（客户订货单 / 出货单）共用；mode = 'purchase' | 'sale'。
+// 本地识别全部在浏览器里完成（pdf.js 读 PDF，Tesseract.js 做英文 OCR，SheetJS 读 Excel，首次使用从 CDN 下载后由浏览器缓存），服务器不参与；
 // AI 识别把照片（模型支持图片时）或识别出的文字交给「设置」里的 OpenAI 兼容接口。
-// 两种方式得到同样格式的结果：{ supplier, ref, rows: [{ code, desc, qty, price, discount, amount }], totals, incGst }
+// 各种方式得到同样格式的结果：{ party: { name, abn }, ref, rows: [{ code, desc, qty, price, discount, amount }], totals, incGst }
 const SCAN_LIBS = {
   tesseract: 'https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js',
   pdf: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/legacy/build/pdf.min.mjs',
   pdfWorker: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.4.299/legacy/build/pdf.worker.min.mjs',
+  xlsx: 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js', // SheetJS 官方 CDN（npm 上的旧版有安全漏洞）
 };
 const SCAN_MAX_PAGES = 10;
 const OCR_SIZE = 2400; // 交给 OCR 的图片长边像素
@@ -34,7 +36,8 @@ async function loadPdfLib() {
   return pdfLib;
 }
 
-// 选中的文件 → 页面：{ canvas, lines }。电子版 PDF 直接读出文字行（textLayer），照片和扫描件 lines 留空等 OCR
+// 选中的文件 → 页面：{ canvas, lines, table }。电子版 PDF 直接读出文字行（textLayer），照片和扫描件 lines 留空等 OCR，
+// Excel / CSV 每个工作表一页，table 是单元格（二维数组），lines 是每行单元格拼成的文字
 async function readScanFiles(files, status) {
   const pages = [];
   for (const file of files) {
@@ -57,11 +60,80 @@ async function readScanFiles(files, status) {
         pages.push({ canvas, lines: textLayer ? lines : null, textLayer });
       }
       await task.destroy();
+    } else if (/\.(xlsx|xlsm|xls|ods|csv|tsv)$/i.test(file.name) || /spreadsheet|excel|csv/.test(file.type)) {
+      status('正在读取表格…');
+      for (const sheet of await readSheets(file)) {
+        if (pages.length >= SCAN_MAX_PAGES) break;
+        const table = sheet.slice(0, 2000).map((r) => r.map((c) => String(c ?? '').trim())).filter((r) => r.some(Boolean));
+        if (table.length) pages.push({ table, lines: table.map((r) => r.filter(Boolean).join('    ')), textLayer: true });
+      }
     } else if (file.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(file.name)) {
       pages.push({ canvas: await imageCanvas(file), lines: null, textLayer: false });
     }
   }
   return pages;
+}
+
+// Excel（xlsx / xls / ods）用 SheetJS 读取，CSV 用与「批量导入」相同的解析；返回每个工作表的二维数组
+async function readSheets(file) {
+  if (/\.(csv|tsv)$/i.test(file.name) || /csv/.test(file.type)) return [parseCsv(await file.text())];
+  if (!window.XLSX) await loadScript(SCAN_LIBS.xlsx);
+  try {
+    const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' });
+    return wb.SheetNames.map((n) => XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: '' }));
+  } catch {
+    throw new Error(`无法读取表格「${file.name}」`);
+  }
+}
+
+// ---------- 表格按表头认列 ----------
+// 各家 Excel 的列名、列顺序都不一样：按常见写法（中英文）认出货号 / 品名 / 数量 / 单价 / 折扣 / 金额，
+// 认不出表头时返回 null，改用文字规则（数量 × 单价 = 金额）
+const SCAN_COLS = {
+  code: ['code', 'sku', 'itemcode', 'productcode', 'stockcode', 'itemno', 'item#', 'partno', 'part#', 'partnumber', 'catno', 'cat#', 'barcode', 'ean', 'upc', '货号', '编码', '商品编码', '产品编号', '条码'],
+  desc: ['description', 'desc', 'itemdescription', 'productdescription', 'product', 'productname', 'itemname', 'name', 'details', 'particulars', '品名', '名称', '商品', '商品名称', '产品', '产品名称', '描述', '物品'],
+  qty: ['qty', 'quantity', 'qnty', 'qtysupplied', 'qtyshipped', 'qtydelivered', 'qtyordered', 'shipped', 'supplied', 'delivered', 'ordered', 'units', '数量', '件数'],
+  price: ['unitprice', 'price', 'unitcost', 'cost', 'rate', 'each', 'priceeach', 'sellprice', 'saleprice', '单价', '价格', '进价', '售价'],
+  discount: ['disc', 'discount', 'disc%', 'discount%', '折扣', '折扣%'],
+  amount: ['amount', 'total', 'linetotal', 'ext', 'extended', 'extprice', 'extendedprice', 'value', 'amt', 'linevalue', 'nett', 'net', '金额', '小计', '合计'],
+};
+const SCAN_COL_MAP = new Map(Object.entries(SCAN_COLS).flatMap(([k, list]) => list.map((a) => [a, k])));
+const scanHead = (h) => String(h).toLowerCase().replace(/[（(][^）)]*[）)]/g, '').replace(/(inc|incl|including|ex|excl|excluding)?\.?\s*gst/g, '').replace(/[\s_\-.:]/g, '');
+const cellNum = (v) => (v === '' || v === null || v === undefined ? null : scanNumber(String(v).replace(/\s/g, '')));
+
+function mapTableRows(table) {
+  for (let h = 0; h < Math.min(table.length, 40); h++) {
+    const cols = {};
+    let item = null;
+    table[h].forEach((cell, i) => {
+      const n = scanHead(cell);
+      if (n === 'item') { if (item === null) item = i; return; }
+      const k = SCAN_COL_MAP.get(n);
+      if (!k) return;
+      // 同时有「订货数量」和「实发数量」时用实发数量
+      if (!(k in cols) || (k === 'qty' && /ship|suppl|deliver/.test(n))) cols[k] = i;
+    });
+    if (item !== null) { if (!('desc' in cols)) cols.desc = item; else if (!('code' in cols)) cols.code = item; } // Item 列：有品名列时是货号，否则是品名
+    if (!('qty' in cols) || !('desc' in cols || 'code' in cols)) continue;
+    const priceHead = [cols.price, cols.amount].filter((i) => i !== undefined).map((i) => String(table[h][i])).join(' ');
+    const incGst = /inc(l|luding)?\.?\s*gst|gst\s*inc/i.test(priceHead) ? true : /ex(cl|cluding)?\.?\s*gst|gst\s*ex/i.test(priceHead) ? false : null;
+    const rows = [];
+    for (const row of table.slice(h + 1)) {
+      const cell = (k) => (k in cols ? row[cols[k]] ?? '' : '');
+      const code = String(cell('code')).trim(), desc = String(cell('desc')).trim();
+      if ((!code && !desc) || SCAN_TOTAL_START.test(desc || code)) continue; // 空行、合计 / 运费行
+      const qty = cellNum(cell('qty'));
+      if (!(qty > 0)) continue;
+      let price = cellNum(cell('price')), amount = cellNum(cell('amount')), disc = cellNum(cell('discount')) || 0;
+      // 百分比格式的折扣在 Excel 里存的是小数（0.1 = 10%），用金额验算后再决定
+      const fits = (d) => price !== null && amount !== null && near(qty * price * (1 - d / 100), amount, 0.011 + qty * 0.005);
+      if (disc > 0 && disc < 1 && !fits(disc) && fits(disc * 100)) disc *= 100;
+      if (price === null && amount !== null) price = Math.round((amount / qty / (1 - disc / 100)) * 10000) / 10000;
+      rows.push({ code, desc, qty, price, discount: disc, amount });
+    }
+    if (rows.length) return { rows, incGst };
+  }
+  return null;
 }
 
 // PDF 文字块按行合并（同一行 y 坐标相近），行内按 x 排序；字与字间距明显时补空格
@@ -284,33 +356,67 @@ function scanRow(line, order, hasCode) {
   const first = Math.min(best.q.i, best.p.i);
   let words = toks.slice(0, first);
   if (best.q.i < best.p.i) words = words.concat(toks.slice(best.q.i + 1, best.p.i).filter((x, k) => !(k === 0 && SCAN_UNIT.test(x.t))));
-  words = words.map((x) => x.t);
-  while (words.length && /^[^0-9]$/.test(words[0])) words.shift(); // OCR 在页边认出的杂字
-  while (words.length && /^[^0-9]$/.test(words[words.length - 1])) words.pop();
-  if (words.length > 1 && (hasCode || (/\d/.test(words[0]) && words[0].length >= 3 && !/^\d+(\.\d+)?[a-z]+$/i.test(words[0])) || /^[a-z]+-\w+$/i.test(words[0]))) {
-    r.code = words.shift();
-  } else r.code = '';
-  r.desc = words.join(' ');
-  if (!r.desc && !r.code) return null;
-  return r;
+  Object.assign(r, splitCodeDesc(words.map((x) => x.t), hasCode));
+  return r.desc || r.code ? r : null;
 }
 
-function parseScanText(lines) {
+// 一行里除数字以外的文字 → 货号 + 品名（第一个词像货号时当作货号）
+function splitCodeDesc(words, hasCode) {
+  words = words.slice();
+  while (words.length && /^[^0-9]$/.test(words[0])) words.shift(); // OCR 在页边认出的杂字
+  while (words.length && /^[^0-9]$/.test(words[words.length - 1])) words.pop();
+  const w = words[0] || '';
+  const looksCode = (/\d/.test(w) && w.length >= 3 && !/^\d+(\.\d+)?[a-z]+$/i.test(w)) || /^[a-z]+-\w+$/i.test(w); // 10mm、500ml 这类是规格不是货号
+  // 表头有货号列时，带数字或连字符的第一个词就当货号（货号列空着时品名的第一个词不会被误当货号）
+  const code = words.length > 1 && (looksCode || (hasCode && /[\d-]/.test(w))) ? words.shift() : '';
+  return { code, desc: words.join(' ') };
+}
+
+// 只有数量、没有价格的订货单：每行取一个整数当数量（数量列在品名前取第一个，否则取最后一个）
+function scanQtyRow(line, qtyFirst, hasCode) {
+  const toks = scanTokens(line);
+  const nums = toks.filter((x) => x.v !== null && !x.pct && Number.isInteger(x.v) && x.v > 0 && x.v < 100000);
+  if (!nums.length) return null;
+  const q = qtyFirst ? nums[0] : nums[nums.length - 1];
+  const r = Object.assign({ qty: q.v, price: null, discount: 0, amount: null, ok: true }, splitCodeDesc(toks.filter((x) => x !== q).map((x) => x.t), hasCode));
+  return r.desc || r.code ? r : null;
+}
+
+// 单号标签：采购找发票 / 送货单号；销售先找客户的 PO / 订单号，再找单据号
+const REF_LABELS = {
+  purchase: [/\b(?:invoice|inv|docket|document)\.?[ \t]*(?:no\b\.?|number|num|#)[ \t]*[:#.]?/i],
+  sale: [
+    /\b(?:purchase\s+order|order|p\.?\s?o\.?)[ \t]*(?:no\b\.?|number|num|#)[ \t]*[:#.]?/i,
+    /\bp\.?\s?o\.?(?!\s*box)[ \t]*[:#]/i,
+    /\b(?:your|customer|cust)\.?[ \t]*ref(?:erence)?\b[ \t]*[:#.]?/i,
+    /\b(?:invoice|inv|docket|document)\.?[ \t]*(?:no\b\.?|number|num|#)[ \t]*[:#.]?/i,
+  ],
+};
+
+function parseScanText(lines, mode = 'purchase') {
   lines = lines.map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim());
-  const isHead = (l) => /\b(qty|qnty|quantity)\b/i.test(l) && /\b(price|rate|amount|total|cost|value)\b/i.test(l) && scanTokens(l).filter((x) => x.v !== null).length < 2;
+  const isHead = (l) => /\b(qty|qnty|quantity)\b|数量/i.test(l) && /\b(price|rate|amount|total|cost|value|desc|description|product|item|code|sku)\b|单价|金额|品名|名称|货号|商品/i.test(l) && scanTokens(l).filter((x) => x.v !== null).length < 2;
   const headIdx = lines.findIndex(isHead);
   const head = headIdx >= 0 ? lines[headIdx] : '';
   const pricePos = head.search(/\b(price|rate|cost)\b/i);
   const order = pricePos >= 0 && pricePos < head.search(/\b(qty|qnty|quantity)\b/i) ? 'pq' : 'qp';
   const hasCode = /\b(code|sku|part\s*(no|#)|cat(alogue)?\s*(no|#)|item\s*(no|#|code))\b/i.test(head) ||
     (/\bitem\b(?!\s+desc)/i.test(head) && /\bdesc/i.test(head) && head.search(/\bitem\b/i) < head.search(/\bdesc/i));
+  // 表头里没有价格 / 金额列：只有数量的订货单
+  const qtyOnly = !!head && !/\b(price|rate|amount|total|cost|value)\b|单价|金额/i.test(head);
+  const qtyFirst = head.search(/\b(qty|qnty|quantity)\b/i) < head.search(/\b(desc|description|product|item)\b/i);
   const rows = [];
   const totals = { subtotal: null, gst: null, total: null, extra: 0 };
-  let afterTotals = false;
+  let afterTotals = false, firstRow = -1;
+  const push = (row, n) => { if (firstRow < 0) firstRow = n; rows.push(row); };
   lines.forEach((line, n) => {
     if (n === headIdx || (headIdx >= 0 && n < headIdx) || isHead(line)) return;
-    const row = scanRow(line, order, hasCode);
-    if (row && row.ok && !SCAN_TOTAL_START.test(line)) return rows.push(row);
+    if (qtyOnly && !afterTotals && !SCAN_TOTAL_START.test(line)) {
+      const q = scanQtyRow(line, qtyFirst, hasCode);
+      if (q) return push(q, n);
+    }
+    const row = qtyOnly ? null : scanRow(line, order, hasCode);
+    if (row && row.ok && !SCAN_TOTAL_START.test(line)) return push(row, n);
     const amounts = scanTokens(line).filter((x) => x.v !== null && !x.pct);
     const v = amounts.length ? amounts[amounts.length - 1].v : null;
     if (v !== null && /\b(sub\s*-?\s*total|total\s*\(?(ex|excl|excluding|before)\b|net\s+(total|amount))/i.test(line)) totals.subtotal = v;
@@ -318,40 +424,47 @@ function parseScanText(lines) {
     else if (v !== null && /\b(gst|tax)\b/i.test(line)) totals.gst = v;
     else if (v !== null && /\btotal\b|amount\s+(due|payable)|balance\s+due/i.test(line)) totals.total = Math.max(totals.total || 0, v);
     else if (v !== null && /\b(freight|delivery|shipping|postage|handling|rounding)\b/i.test(line)) totals.extra += v;
-    else if (row && !afterTotals && headIdx >= 0) return rows.push(row); // 表格内对不上的行也列出来，标红核对
+    else if (row && !afterTotals && headIdx >= 0) return push(row, n); // 表格内对不上的行也列出来，标红核对
     else return;
     afterTotals = true;
   });
 
-  // 抬头：ABN（排除自己公司的）、发票号、供应商名称（第一行像公司名的文字）
+  // 抬头：对方的 ABN（排除自己公司的）、单号、对方名称（表格上方像公司名的文字，排除自己公司名）
   const text = lines.join('\n');
   const own = String(S().abn || '').replace(/\D/g, '');
   const abn = [...text.matchAll(/\bA\.?B\.?N\.?\s*[:#]?\s*((?:\d\s*){11})/gi)].map((m) => m[1].replace(/\D/g, '')).find((x) => x !== own) || '';
   const refTok = (s) => (s.match(/[A-Z0-9][A-Z0-9\-/]*\d[A-Z0-9\-/]*/gi) || []).filter((x) => x.length >= 4);
-  const labelRe = /\b(?:invoice|inv|docket|document)\.?[ \t]*(?:no\b\.?|number|num|#)[ \t]*[:#.]?/i;
-  const li = lines.findIndex((l) => labelRe.test(l));
   let ref = '';
-  if (li >= 0) {
+  for (const labelRe of REF_LABELS[mode] || REF_LABELS.purchase) {
+    const li = lines.findIndex((l) => labelRe.test(l));
+    if (li < 0) continue;
     const after = lines[li].slice(lines[li].search(labelRe)).replace(labelRe, '');
     const adjacent = [...refTok(lines[li - 1] || ''), ...refTok(lines[li + 1] || '')];
     const same = refTok(after)[0];
+    // 号码框跨了两行时，同一行只认出半截，用相邻行里包含它的完整号码
     ref = (same && adjacent.find((x) => x.length > same.length && x.endsWith(same))) || same || refTok(lines[li - 1] || '').pop() || refTok(lines[li + 1] || '')[0] || '';
+    if (ref) break;
   }
-  if (!ref) ref = (text.match(/\b(?:invoice|inv|docket|document)\.?[ \t]*(?:no\.?|number|num|#)?[ \t]*[:#.]?[ \t]*([A-Z0-9][A-Z0-9\-/]*\d[A-Z0-9\-/]*)/i) || [])[1] || '';
-  // 供应商名称：优先找带公司后缀（Pty Ltd 等）的行，否则取开头第一行像名称的文字（至少两个 3 个字母以上的词）
-  const nameOf = (l) => l.replace(/\b(tax\s+)?invoice\b.*$|\bA\.?B\.?N\b.*$/i, '').split(/\s+/).filter((w) => w === '&' || (w.length > 1 && /[a-z]/i.test(w))).join(' ');
-  const top = lines.slice(0, headIdx > 0 ? Math.min(headIdx, 10) : 10).map(nameOf); // 公司名在表格上方
+  if (!ref && mode !== 'sale') ref = (text.match(/\b(?:invoice|inv|docket|document)\.?[ \t]*(?:no\.?|number|num|#)?[ \t]*[:#.]?[ \t]*([A-Z0-9][A-Z0-9\-/]*\d[A-Z0-9\-/]*)/i) || [])[1] || '';
+  // 名称：优先找带公司后缀（Pty Ltd 等）的行，否则取开头第一行像名称的文字（至少两个 3 个字母以上的词）
+  const ownName = scanKey(S().companyName);
+  const isOwn = (n) => ownName.length >= 4 && scanKey(n).includes(ownName);
+  const nameOf = (l) => l.replace(/\b(tax\s+)?invoice\b.*$|\bA\.?B\.?N\b.*$/i, '').replace(/^.*?\b(from|to|customer|supplier|vendor|buyer|seller)\s*:\s*/i, '').split(/\s+/).filter((w) => w === '&' || (w.length > 1 && /[a-z]/i.test(w))).join(' ');
+  const tableStart = [headIdx, firstRow].filter((i) => i >= 0);
+  const top = lines.slice(0, Math.min(10, ...tableStart)).map(nameOf).filter((n) => !isOwn(n)); // 公司名在表头 / 第一行商品上方
   let name = top.find((n) => /\b(pty|ltd|limited|p\/l)\b/i.test(n)) || top.find((n) => n.split(' ').filter((w) => /^[a-z]{3,}$/i.test(w)).length >= 2) || '';
   name = name.replace(/^(.*?\b(pty\.?\s*ltd|limited|p\/l|ltd))\b.*$/i, '$1');
-  return { supplier: { name, abn }, ref, rows, totals, incGst: null };
+  return { party: { name, abn }, ref, rows, totals, incGst: null };
 }
 
-// 两种识别方式共用：核对每行、判断单据价格是否含 GST、计算进货单价（不含 GST）
+// 各种识别方式共用：核对每行、判断单据价格是否含 GST；
+// 算出 unitCost（扣折扣后、不含 GST 的单价，采购用）和 unitPrice（折扣前、按单据含 / 不含 GST，销售用）；单据没有价格时两者为 null
 function reviewScan(r, gstRate) {
   r.rows.forEach((x) => {
     x.discount = x.discount || 0;
+    x.priced = x.price !== null || x.amount !== null;
     if (x.amount === null && x.qty && x.price !== null) x.amount = r2(x.qty * x.price * (1 - x.discount / 100));
-    x.ok = x.qty > 0 && x.price !== null && x.amount !== null && near(x.qty * x.price * (1 - x.discount / 100), x.amount, 0.011 + x.qty * 0.005);
+    x.ok = !x.priced || (x.qty > 0 && x.price !== null && x.amount !== null && near(x.qty * x.price * (1 - x.discount / 100), x.amount, 0.011 + x.qty * 0.005));
   });
   const t = Object.assign({ subtotal: null, gst: null, total: null, extra: 0 }, r.totals);
   r.sum = r2(r.rows.reduce((a, x) => a + (x.amount || 0), 0));
@@ -365,8 +478,10 @@ function reviewScan(r, gstRate) {
   r.matched = r.target !== null && hit(r.target);
   r.withGst = t.gst > 0 ? true : t.gst === 0 ? false : null;
   r.rows.forEach((x) => {
+    if (!x.priced) { x.unitCost = x.unitPrice = null; return; }
     const net = x.ok || x.price === null ? x.amount / x.qty : x.price * (1 - x.discount / 100);
     x.unitCost = Math.round(((Number.isFinite(net) ? net : 0) / (r.incGst ? 1 + gstRate : 1)) * 10000) / 10000;
+    x.unitPrice = x.price !== null ? x.price : Number.isFinite(net) ? net / (1 - x.discount / 100) : 0;
   });
   return r;
 }
@@ -374,10 +489,10 @@ function reviewScan(r, gstRate) {
 // 匹配用的键：只留字母数字并统一 OCR 易混字符（O→0，I/L→1），货号 HW-00L 也能对上 HW-001
 const scanKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9一-鿿]+/g, '').replace(/o/g, '0').replace(/[il]/g, '1');
 
-// 识别的完整流程；engine = 'ocr'（本地）或 'ai'
-async function runScan(files, engine, status) {
+// 识别的完整流程；engine = 'ocr'（本地）或 'ai'，mode = 'purchase' | 'sale'
+async function runScan(files, engine, status, mode = 'purchase') {
   const pages = await readScanFiles(files, status);
-  if (!pages.length) throw new Error('请选择照片、扫描件或 PDF 文件');
+  if (!pages.length) throw new Error('请选择照片、扫描件、PDF、Excel 或 CSV 文件');
   let result;
   if (engine === 'ai') {
     const vision = !!S().aiVision;
@@ -386,13 +501,21 @@ async function runScan(files, engine, status) {
     const textPages = pages.filter((p) => p.lines && (!vision || p.textLayer));
     const text = textPages.map((p, n) => (textPages.length > 1 ? `--- Page ${n + 1} ---\n` : '') + p.lines.join('\n')).join('\n\n');
     const images = vision ? pages.filter((p) => !p.textLayer).map((p) => scaleCanvas(p.canvas, AI_IMG_SIZE).toDataURL('image/jpeg', 0.85)) : [];
-    result = await api('/api/scan/ai', { method: 'POST', body: { images, text } });
+    result = await api('/api/scan/ai', { method: 'POST', body: { images, text, mode } });
   } else {
     await ocrPages(pages, status);
-    result = parseScanText(pages.flatMap((p) => p.lines));
+    result = parseScanText(pages.flatMap((p) => p.lines), mode);
+    // Excel / CSV 能认出表头的按列取商品行（更准），其余页面仍用文字规则
+    const tables = pages.filter((p) => p.table).map((p) => mapTableRows(p.table)).filter(Boolean);
+    if (tables.length) {
+      const others = pages.filter((p) => !p.table);
+      result.rows = tables.flatMap((t) => t.rows).concat(others.length ? parseScanText(others.flatMap((p) => p.lines), mode).rows : []);
+      const hint = tables.find((t) => t.incGst !== null);
+      if (hint) result.incGst = hint.incGst;
+    }
   }
   result.text = pages.filter((p) => p.lines).map((p) => p.lines.join('\n')).join('\n\n');
-  result.pages = pages.map((p) => p.canvas);
+  result.pages = pages.map((p) => p.canvas).filter(Boolean);
   return result;
 }
 

@@ -734,6 +734,7 @@ function openInvoiceEditor({ customerId = '', itemId = '' } = {}) {
   $$('#invDlg .gst-col').forEach((el) => el.classList.toggle('hidden', !S().gstRegistered));
   f.pricesIncGst.closest('label').classList.toggle('hidden', !S().gstRegistered);
   renderInvLines();
+  resetScan('inv');
   $('#invDlg').showModal();
 }
 function updateInvCustomer() {
@@ -752,8 +753,8 @@ function renderInvLines() {
   const opts = itemOptions();
   const gstOn = S().gstRegistered;
   $('#invLines').innerHTML = invLines.map((l, n) => `
-    <tr data-line="${n}">
-      <td style="min-width:220px"><select data-f="itemId" required><option value="">选择商品…</option>${opts}</select><div class="stock-warn" data-warn></div></td>
+    <tr data-line="${n}" class="${scanRowClass(l)}">
+      <td style="min-width:220px"><select data-f="itemId" required><option value="">选择商品…</option>${opts}</select><div class="stock-warn" data-warn></div>${scanSrcHtml(l, n)}</td>
       <td class="num"><input class="w-qty" data-f="qty" type="number" min="1" step="1" value="${esc(l.qty)}" required></td>
       <td class="num"><input class="w-price" data-f="unitPrice" type="number" min="0" step="0.01" value="${esc(l.unitPrice)}" required></td>
       <td class="num"><input class="w-disc" data-f="discountPct" type="number" min="0" max="100" step="0.01" value="${esc(l.discountPct)}"></td>
@@ -771,9 +772,11 @@ $('#invLines').addEventListener('input', (e) => {
   const l = invLines[Number(tr.dataset.line)];
   const f = e.target.dataset.f;
   l[f] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-  if (f === 'itemId') { // 选择商品时带出默认售价和 GST 设置
+  if (f !== 'itemId') scanChecked(l, tr);
+  if (f === 'itemId') { // 选择商品时带出默认售价和 GST 设置；识别出的行保留单据上的价格
     const nl = newInvLine(l.itemId);
-    Object.assign(l, { unitPrice: nl.unitPrice, taxable: nl.taxable });
+    Object.assign(l, l.src?.priced ? { taxable: nl.taxable } : { unitPrice: nl.unitPrice, taxable: nl.taxable });
+    if (l.src) return renderInvLines();
     tr.querySelector('[data-f=unitPrice]').value = l.unitPrice;
     tr.querySelector('[data-f=taxable]').checked = l.taxable;
   }
@@ -782,6 +785,8 @@ $('#invLines').addEventListener('input', (e) => {
 $('#invLines').addEventListener('click', (e) => {
   const b = e.target.closest('[data-rmline]');
   if (b) { invLines.splice(Number(b.dataset.rmline), 1); renderInvLines(); }
+  const add = e.target.closest('[data-newitem]');
+  if (add) scanNewItem('inv', Number(add.dataset.newitem));
 });
 $('#invForm').pricesIncGst.addEventListener('change', calcInvoice);
 
@@ -832,7 +837,7 @@ $('#invForm').addEventListener('submit', async (e) => {
     const inv = await api('/api/invoices', { method: 'POST', body: {
       customerId: Number(f.customerId.value) || null, date: f.date.value, dueDate: f.dueDate.value,
       reference: f.reference.value, pricesIncGst: f.pricesIncGst.value === 'true', note: f.note.value,
-      lines: invLines.map((l) => ({ itemId: Number(l.itemId), qty: l.qty, unitPrice: l.unitPrice, discountPct: l.discountPct, taxable: l.taxable })),
+      lines: invLines.map((l) => ({ itemId: Number(l.itemId), qty: l.qty, unitPrice: l.unitPrice, discountPct: l.discountPct, taxable: l.taxable, alias: l.src?.keys || [] })),
     } });
     $('#invDlg').close();
     toast(`已开具 ${inv.no}，库存已扣减`);
@@ -881,7 +886,7 @@ function openPoEditor({ supplierId = '', itemId = '' } = {}) {
   f.withGst.parentElement.lastChild.textContent = ` 供应商收取 ${S().taxName || 'GST'}（${S().taxRate}%）`;
   poLines = [newPoLine(itemId)];
   renderPoLines();
-  resetScan();
+  resetScan('po');
   $('#poDlg').showModal();
 }
 $('#poNewSup').onclick = () => openContact('suppliers', null, (c) => { $('#poSupplier').value = c.id; });
@@ -897,11 +902,8 @@ $('#poNewItem').onclick = () => openItem(null, {
 function renderPoLines() {
   const opts = itemOptions();
   $('#poLines').innerHTML = poLines.map((l, n) => `
-    <tr data-line="${n}" class="${l.src && !l.src.ok ? 'scan-bad' : ''}">
-      <td style="min-width:220px"><select data-f="itemId" required><option value="">选择商品…</option>${opts}</select>${l.src ? `
-        <div class="scan-src">${esc([l.src.code, l.src.desc].filter(Boolean).join(' · '))}</div>
-        ${l.src.ok ? '' : '<div class="stock-warn">数量 × 单价与单据金额对不上，请对照原图核对</div>'}
-        ${l.itemId ? '' : `<button type="button" class="linkbtn" data-newitem="${n}">+ 新建为物品</button>`}` : ''}</td>
+    <tr data-line="${n}" class="${scanRowClass(l)}">
+      <td style="min-width:220px"><select data-f="itemId" required><option value="">选择商品…</option>${opts}</select>${scanSrcHtml(l, n)}</td>
       <td class="num"><input class="w-qty" data-f="qty" type="number" min="1" step="1" value="${esc(l.qty)}" required></td>
       <td class="num"><input class="w-price" data-f="unitCost" type="number" min="0" step="0.0001" value="${esc(l.unitCost)}" required></td>
       <td class="num hide-sm muted amt" data-cost></td>
@@ -916,14 +918,11 @@ $('#poLines').addEventListener('input', (e) => {
   if (!tr) return;
   const l = poLines[Number(tr.dataset.line)];
   l[e.target.dataset.f] = e.target.value;
-  if (l.src && !l.src.ok && e.target.dataset.f !== 'itemId') { // 改过数量 / 单价即视为已核对
-    l.src.ok = true;
-    tr.classList.remove('scan-bad');
-    tr.querySelector('.stock-warn')?.remove();
-  }
+  if (e.target.dataset.f !== 'itemId') scanChecked(l, tr);
   if (e.target.dataset.f === 'itemId') {
-    if (l.src) return renderPoLines(); // 识别出的行保留单据上的进货价
+    if (l.src?.priced) return renderPoLines(); // 识别出的行保留单据上的进货价
     l.unitCost = newPoLine(l.itemId).unitCost;
+    if (l.src) return renderPoLines();
     tr.querySelector('[data-f=unitCost]').value = l.unitCost;
   }
   calcPo();
@@ -932,14 +931,7 @@ $('#poLines').addEventListener('click', (e) => {
   const b = e.target.closest('[data-rmline]');
   if (b) { poLines.splice(Number(b.dataset.rmline), 1); renderPoLines(); }
   const add = e.target.closest('[data-newitem]');
-  if (add) {
-    const l = poLines[Number(add.dataset.newitem)];
-    openItem(null, {
-      noInitQty: true,
-      prefill: { name: l.src.desc || l.src.code, sku: l.src.code.replace(/[^\w\-/.]/g, ''), price: l.unitCost },
-      onSaved: (it) => { l.itemId = it.id; renderPoLines(); },
-    });
-  }
+  if (add) scanNewItem('po', Number(add.dataset.newitem));
 });
 $('#poForm').withGst.addEventListener('change', calcPo);
 function calcPo() {
@@ -977,110 +969,156 @@ $('#poForm').addEventListener('submit', async (e) => {
   finally { btn.disabled = false; }
 });
 
-// ---------- 采购入库：识别入货单（照片 / 扫描件 / PDF） ----------
-// 识别过程见 scan.js；这里把结果填进采购单：匹配供应商和物品，换算不含 GST 的进货价，提示需要核对的地方
-let scanSeq = 0, poScan = null;
+// ---------- 识别单据：采购入库（供应商入货单）和销售发票（客户订货单 / 出货单）共用 ----------
+// 识别过程见 scan.js；这里把结果填进单据：匹配供应商 / 客户和物品、按单据换算价格、提示需要核对的地方
 const aiReady = () => !!(S().aiUrl && S().aiModel);
 const digitsOnly = (s) => String(s || '').replace(/\D/g, '');
 const fmtAbn = (s) => digitsOnly(s).replace(/^(\d{2})(\d{3})(\d{3})(\d{3})$/, '$1 $2 $3 $4');
+const invPricesInc = () => !!S().gstRegistered && $('#invForm').pricesIncGst.value === 'true';
+const scanQty = (x) => (x.qty > 0 ? x.qty : 1);
+const SCAN = {
+  po: {
+    mode: 'purchase', verb: '入库', party: '供应商', kind: 'suppliers', select: '#poSupplier', refField: 'supplierRef',
+    list: () => D.suppliers, lines: () => poLines, setLines: (l) => { poLines = l; }, render: () => renderPoLines(), blank: () => newPoLine(),
+    // 进货单价：单据上扣折扣后、不含 GST 的价格；单据没有价格时用当前成本价
+    line: (x, it) => ({ itemId: it ? it.id : '', qty: scanQty(x), unitCost: x.unitCost ?? newPoLine(it?.id).unitCost }),
+    apply: (r) => { if (r.withGst !== null) $('#poForm').withGst.checked = r.withGst; },
+    notes: (r) => [
+      r.incGst && r.rows.some((x) => x.priced) && '单据价格含 GST，进货单价已换算成不含 GST。',
+      r.rows.some((x) => !x.priced) && '单据上没有价格的行已按当前成本价填写。',
+    ],
+    newItem: (l) => ({ price: l.unitCost }),
+  },
+  inv: {
+    mode: 'sale', verb: '开票', party: '客户', kind: 'customers', select: '#invCustomer', refField: 'reference',
+    list: () => D.customers, lines: () => invLines, setLines: (l) => { invLines = l; }, render: () => renderInvLines(), blank: () => newInvLine(),
+    // 售价：单据上有价格时按发票的价格模式（含 / 不含 GST）换算，折扣照搬；没有价格时用物品默认售价
+    line: (x, it, r) => {
+      const l = Object.assign(newInvLine(it?.id), { qty: scanQty(x) });
+      if (x.unitPrice === null) return l;
+      const rate = (Number(S().taxRate) || 10) / 100;
+      let p = x.unitPrice;
+      if (r.incGst && !invPricesInc()) p /= 1 + rate;
+      else if (!r.incGst && invPricesInc() && l.taxable) p *= 1 + rate;
+      return Object.assign(l, { unitPrice: r2(p), discountPct: x.discount || 0 });
+    },
+    apply: () => updateInvCustomer(),
+    notes: (r) => {
+      const priced = r.rows.some((x) => x.priced);
+      return [
+        priced && r.incGst && !invPricesInc() && '单据价格含 GST，已换算成不含 GST 的单价。',
+        priced && !r.incGst && invPricesInc() && '单据价格不含 GST，已按发票的「价格含 GST」模式换算。',
+        r.rows.some((x) => !x.priced) && '单据上没有价格的行已按物品默认售价填写。',
+      ];
+    },
+    newItem: (l) => ({ salePrice: l.unitPrice }),
+  },
+};
 
-function resetScan() {
-  scanSeq++;
-  poScan = null;
-  $('#poScanInfo').classList.add('hidden');
-  $('#poScanInfo').innerHTML = '';
-  $('#poScanBtn').classList.remove('busy');
-  $('#poScanEngine').classList.toggle('hidden', !aiReady());
+function resetScan(key) {
+  const T = SCAN[key];
+  T.seq = (T.seq || 0) + 1;
+  T.result = null;
+  $(`#${key}ScanInfo`).classList.add('hidden');
+  $(`#${key}ScanInfo`).innerHTML = '';
+  $(`#${key}ScanBtn`).classList.remove('busy');
+  $(`#${key}ScanEngine`).classList.toggle('hidden', !aiReady());
   let engine = 'ai';
   try { engine = localStorage.getItem('inventory-scan-engine') || 'ai'; } catch {}
-  $('#poScanEngine').value = engine;
+  $(`#${key}ScanEngine`).value = engine;
 }
-$('#poScanEngine').addEventListener('change', (e) => { try { localStorage.setItem('inventory-scan-engine', e.target.value); } catch {} });
-$('#poDlg').addEventListener('close', () => { scanSeq++; }); // 关掉对话框即放弃正在进行的识别
+for (const [key, T] of Object.entries(SCAN)) {
+  $(`#${key}ScanEngine`).addEventListener('change', (e) => { try { localStorage.setItem('inventory-scan-engine', e.target.value); } catch {} });
+  $(`#${key}Dlg`).addEventListener('close', () => { T.seq = (T.seq || 0) + 1; }); // 关掉对话框即放弃正在进行的识别
+  $(`#${key}ScanFile`).addEventListener('change', (e) => scanFiles(key, e.target));
+  $(`#${key}ScanInfo`).addEventListener('click', (e) => scanInfoClick(key, e));
+}
 $('#scanPoBtn').onclick = () => { openPoEditor(); $('#poScanFile').click(); };
+$('#scanInvBtn').onclick = () => { openInvoiceEditor(); if ($('#invDlg').open) $('#invScanFile').click(); };
 
-$('#poScanFile').addEventListener('change', async (e) => {
-  const files = [...e.target.files];
-  e.target.value = '';
+async function scanFiles(key, input) {
+  const T = SCAN[key];
+  const files = [...input.files];
+  input.value = '';
   if (!files.length) return;
-  const seq = ++scanSeq;
-  const engine = aiReady() && $('#poScanEngine').value === 'ai' ? 'ai' : 'ocr';
-  const info = $('#poScanInfo');
-  const status = (msg) => { if (seq === scanSeq) info.innerHTML = `<div class="scan-status"><span class="spin"></span><span>${esc(msg)}</span></div>`; };
+  const seq = ++T.seq;
+  const engine = aiReady() && $(`#${key}ScanEngine`).value === 'ai' ? 'ai' : 'ocr';
+  const info = $(`#${key}ScanInfo`);
+  const status = (msg) => { if (seq === T.seq) info.innerHTML = `<div class="scan-status"><span class="spin"></span><span>${esc(msg)}</span></div>`; };
   info.classList.remove('hidden');
   status('正在读取文件…');
-  $('#poScanBtn').classList.add('busy');
+  $(`#${key}ScanBtn`).classList.add('busy');
   try {
-    const r = await runScan(files, engine, status);
-    if (seq === scanSeq) applyScan(r);
+    const r = await runScan(files, engine, status, T.mode);
+    if (seq === T.seq) applyScan(key, r);
   } catch (err) {
-    if (seq === scanSeq) info.innerHTML = `<div class="stock-warn">${esc(err.message)}</div>`;
+    if (seq === T.seq) info.innerHTML = `<div class="stock-warn">${esc(err.message)}</div>`;
   } finally {
-    if (seq === scanSeq) $('#poScanBtn').classList.remove('busy');
+    if (seq === T.seq) $(`#${key}ScanBtn`).classList.remove('busy');
   }
-});
+}
 
-// 供应商：先按 ABN，再按名称（单据上的公司名或全文里出现的供应商名称）
-function findScanSupplier(r) {
-  const abn = digitsOnly(r.supplier?.abn);
-  const name = scanKey(r.supplier?.name);
+// 供应商 / 客户：先按 ABN，再按名称（单据上的公司名或全文里出现的名称）
+function findScanParty(r, list) {
+  const abn = digitsOnly(r.party?.abn);
+  const name = scanKey(r.party?.name);
   const all = scanKey(r.text);
-  return (abn.length === 11 && D.suppliers.find((c) => digitsOnly(c.abn) === abn)) ||
-    D.suppliers.find((c) => {
+  return (abn.length === 11 && list.find((c) => digitsOnly(c.abn) === abn)) ||
+    list.find((c) => {
       const k = scanKey(c.name);
       return k.length >= 4 && ((name.length >= 4 && (name.includes(k) || k.includes(name))) || all.includes(k));
     }) || null;
 }
 
-// 物品：以前确认过的对照（同一供应商的货号，其次品名；货号认错一个字时还能靠品名对上）→ SKU 与单据货号相同 → 名称完全相同
+// 物品：以前确认过的对照（同一供应商 / 客户的货号，其次品名；货号认错一个字时还能靠品名对上）→ SKU 与单据货号相同 → 名称完全相同
 const scanKeys = (x) => [...new Set([scanKey(x.code), scanKey(x.desc)].filter(Boolean))];
-function matchScanItem(x, supplierId) {
+function matchScanItem(x, partyId) {
   const keys = scanKeys(x);
-  const alias = (any) => keys.map((k) => D.items.find((i) => i.aliases?.some((a) => a.key === k && (any || a.supplierId === supplierId)))).find(Boolean);
+  const alias = (any) => keys.map((k) => D.items.find((i) => i.aliases?.some((a) => a.key === k && (any || a.partyId === partyId)))).find(Boolean);
   const code = scanKey(x.code), desc = scanKey(x.desc);
-  return alias(false) || (!supplierId && alias(true)) ||
+  return alias(false) || (!partyId && alias(true)) ||
     (code && D.items.find((i) => i.sku && scanKey(i.sku) === code)) ||
     (desc && D.items.find((i) => scanKey(i.name) === desc)) || null;
 }
 
-function applyScan(r) {
+function applyScan(key, r) {
+  const T = SCAN[key];
   reviewScan(r, (Number(S().taxRate) || 10) / 100);
-  const f = $('#poForm');
-  r.sup = findScanSupplier(r);
-  if (r.sup && !f.supplierId.value) f.supplierId.value = r.sup.id;
-  if (r.ref && !f.supplierRef.value) f.supplierRef.value = r.ref.slice(0, 60);
-  if (r.withGst !== null) f.withGst.checked = r.withGst;
-  const supplierId = Number(f.supplierId.value) || 0;
-  const lines = r.rows.map((x) => {
-    const it = matchScanItem(x, supplierId);
-    return { itemId: it ? it.id : '', qty: x.qty > 0 ? x.qty : 1, unitCost: x.unitCost, src: { code: x.code, desc: x.desc, ok: x.ok, keys: scanKeys(x) } };
-  });
+  const sel = $(T.select), f = sel.form;
+  r.match = findScanParty(r, T.list());
+  if (r.match && !sel.value) sel.value = r.match.id;
+  if (r.ref && !f[T.refField].value) f[T.refField].value = r.ref.slice(0, 60);
+  T.apply(r);
+  const partyId = Number(sel.value) || 0;
+  const lines = r.rows.map((x) => Object.assign(T.line(x, matchScanItem(x, partyId), r),
+    { src: { code: x.code, desc: x.desc, ok: x.ok, priced: x.priced, keys: scanKeys(x) } }));
   r.autoMatched = lines.filter((l) => l.itemId).length;
-  // 采购单里只有一行空白时直接替换，否则追加到后面
-  poLines = poLines.length === 1 && !poLines[0].itemId ? lines : poLines.concat(lines);
-  if (!poLines.length) poLines = [newPoLine()];
-  renderPoLines();
-  poScan = r;
-  renderScanInfo();
+  // 单据里只有一行空白时直接替换，否则追加到后面
+  const cur = T.lines();
+  T.setLines(cur.length === 1 && !cur[0].itemId ? lines : cur.concat(lines));
+  if (!T.lines().length) T.setLines([T.blank()]);
+  T.render();
+  T.result = r;
+  renderScanInfo(key);
 }
 
-function renderScanInfo() {
-  const r = poScan;
+function renderScanInfo(key) {
+  const T = SCAN[key], r = T.result;
   const bad = r.rows.filter((x) => !x.ok).length;
   const notes = [];
   if (!r.rows.length) notes.push(['warn', '没有识别到商品行。可以换一张更清晰、更正的照片再试，或展开「识别出的文字」手动录入。']);
-  else notes.push(['', `已识别 ${r.rows.length} 行商品，其中 ${r.autoMatched} 行已自动匹配物品。请逐行核对数量和单价，确认无误再入库。`]);
+  else notes.push(['', `已识别 ${r.rows.length} 行商品，其中 ${r.autoMatched} 行已自动匹配物品。请逐行核对数量和单价，确认无误再${T.verb}。`]);
   if (bad) notes.push(['warn', `${bad} 行的「数量 × 单价」与单据金额对不上（已标红），可能认错了数字。`]);
   if (r.rows.length && r.target !== null) {
     notes.push(r.matched ? ['ok', '商品行合计与单据金额一致 ✓']
       : ['warn', `商品行合计 ${money(r.sum)}，单据${r.incGst ? '总计' : '小计'} ${money(r.target)}，两者不一致，可能有漏识别或认错的行。`]);
   }
-  if (r.incGst) notes.push(['', '单据价格含 GST，进货单价已换算成不含 GST。']);
-  const name = r.supplier?.name || '', abn = fmtAbn(r.supplier?.abn);
-  const newSup = !r.sup && (name || abn) && !$('#poSupplier').value;
-  $('#poScanInfo').innerHTML = notes.map(([cls, msg]) => `<div class="${cls}">${esc(msg)}</div>`).join('') +
-    (newSup ? `<div class="row" style="flex-wrap:wrap"><span>单据上的供应商：${esc([name, abn && 'ABN ' + abn].filter(Boolean).join(' · '))}</span>
-      <button type="button" class="btn sm" data-scan="sup">+ 新增此供应商</button></div>` : '') + `
+  T.notes(r).filter(Boolean).forEach((m) => notes.push(['', m]));
+  const name = r.party?.name || '', abn = fmtAbn(r.party?.abn);
+  const add = !r.match && (name || abn) && !$(T.select).value;
+  $(`#${key}ScanInfo`).innerHTML = notes.map(([cls, msg]) => `<div class="${cls}">${esc(msg)}</div>`).join('') +
+    (add ? `<div class="row" style="flex-wrap:wrap"><span>单据上的${T.party}：${esc([name, abn && 'ABN ' + abn].filter(Boolean).join(' · '))}</span>
+      <button type="button" class="btn sm" data-scan="party">+ 新增此${T.party}</button></div>` : '') + `
     <div class="row scan-actions">
       ${r.pages.length ? '<button type="button" class="linkbtn" data-scan="img">查看原图</button>' : ''}
       ${r.text ? '<button type="button" class="linkbtn" data-scan="text">识别出的文字</button>' : ''}
@@ -1089,21 +1127,45 @@ function renderScanInfo() {
     ${r.text ? `<pre class="scan-text hidden">${esc(r.text)}</pre>` : ''}`;
 }
 
-$('#poScanInfo').addEventListener('click', (e) => {
+function scanInfoClick(key, e) {
   const b = e.target.closest('[data-scan]');
-  if (!b || !poScan) return;
-  const r = poScan;
+  const T = SCAN[key], r = T.result;
+  if (!b || !r) return;
   ({
-    img: () => openViewer(r.pages.map((c) => c.toDataURL('image/jpeg', 0.85)), 0, tr('入货单原图')),
-    text: () => $('#poScanInfo .scan-text').classList.toggle('hidden'),
+    img: () => openViewer(r.pages.map((c) => c.toDataURL('image/jpeg', 0.85)), 0, tr('单据原图')),
+    text: () => $(`#${key}ScanInfo .scan-text`).classList.toggle('hidden'),
     csv: () => downloadScanCsv(r),
-    sup: () => openContact('suppliers', null, (c) => { $('#poSupplier').value = c.id; r.sup = c; renderScanInfo(); },
-      { name: r.supplier.name, abn: fmtAbn(r.supplier.abn) }),
+    party: () => openContact(T.kind, null, (c) => { $(T.select).value = c.id; r.match = c; T.apply(r); renderScanInfo(key); },
+      { name: r.party.name, abn: fmtAbn(r.party.abn) }),
   })[b.dataset.scan]?.();
-});
+}
+
+// 识别出的行在单据里的显示：单据原文、对不上时标红、没有对应物品时可一键新建
+function scanRowClass(l) { return l.src && !l.src.ok ? 'scan-bad' : ''; }
+function scanSrcHtml(l, n) {
+  if (!l.src) return '';
+  return `<div class="scan-src">${esc([l.src.code, l.src.desc].filter(Boolean).join(' · '))}</div>
+    ${l.src.ok ? '' : '<div class="stock-warn scan-warn">数量 × 单价与单据金额对不上，请对照原图核对</div>'}
+    ${l.itemId ? '' : `<button type="button" class="linkbtn" data-newitem="${n}">+ 新建为物品</button>`}`;
+}
+// 改过数量 / 价格即视为已核对
+function scanChecked(l, tr) {
+  if (!l.src || l.src.ok) return;
+  l.src.ok = true;
+  tr.classList.remove('scan-bad');
+  tr.querySelector('.scan-warn')?.remove();
+}
+function scanNewItem(key, n) {
+  const T = SCAN[key], l = T.lines()[n];
+  openItem(null, {
+    noInitQty: true,
+    prefill: Object.assign({ name: l.src.desc || l.src.code, sku: l.src.code.replace(/[^\w\-/.]/g, '') }, T.newItem(l)),
+    onSaved: (it) => { l.itemId = it.id; if ('taxable' in l) l.taxable = !it.gstFree; T.render(); },
+  });
+}
 
 function downloadScanCsv(r) {
-  const rows = [['货号', '品名', '数量', '单价', '折扣%', '金额'].map(tr), ...r.rows.map((x) => [x.code, x.desc, x.qty, x.price, x.discount || '', x.amount])];
+  const rows = [['货号', '品名', '数量', '单价', '折扣%', '金额'].map(tr), ...r.rows.map((x) => [x.code, x.desc, x.qty, x.price ?? '', x.discount || '', x.amount ?? ''])];
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob(['﻿' + rows.map((row) => row.map(csvCell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   a.download = `${(r.ref || 'scan').replace(/[^\w.-]+/g, '-')}-${today()}.csv`;

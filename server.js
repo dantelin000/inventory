@@ -368,6 +368,7 @@ function createInvoice(body) {
     note: str(body.note, 1000), status: 'issued', createdAt: now(),
   };
   lines.forEach((l) => recordMovement(findItem(l.itemId), 'out', l.qty, `销售 ${inv.no}${customer.name ? ' · ' + customer.name : ''}`, { invoiceId: inv.id }));
+  learnAliases(body.lines, lines, customer.id || 0);
   db.invoices.push(inv);
   return inv;
 }
@@ -426,21 +427,24 @@ function createPurchase(body) {
     }
     recordMovement(item, 'in', l.qty, `采购 ${po.no}${supplier ? ' · ' + supplier.name : ''}`, { purchaseId: po.id });
   });
-  // 识别单据时带来的「供应商货号 / 品名」：记到物品上，下次同一供应商的单据自动匹配
-  body.lines.forEach((l, n) => {
-    [].concat(l.alias || []).slice(0, 2).forEach((a) => {
-      const key = str(a, 120);
-      if (key) learnAlias(findItem(lines[n].itemId), supplier ? supplier.id : 0, key);
-    });
-  });
+  learnAliases(body.lines, lines, supplier ? supplier.id : 0);
   db.purchases.push(po);
   return po;
 }
 
-function learnAlias(item, supplierId, key) {
-  const same = (a) => a.supplierId === supplierId && a.key === key;
-  db.items.forEach((i) => { if (i.aliases?.some(same)) i.aliases = i.aliases.filter((a) => !same(a)); });
-  item.aliases = (item.aliases || []).concat({ supplierId, key }).slice(-100);
+// 识别单据时带来的「对方货号 / 品名」：记到物品上，下次同一供应商 / 客户的单据自动匹配。
+// partyId 是供应商或客户的 id（两者来自同一个序号，不会重复），0 表示未指定
+function learnAliases(input, lines, partyId) {
+  input.forEach((l, n) => {
+    [].concat(l.alias || []).slice(0, 2).forEach((a) => {
+      const key = str(a, 120);
+      if (!key) return;
+      const item = findItem(lines[n].itemId);
+      const same = (x) => x.partyId === partyId && x.key === key;
+      db.items.forEach((i) => { if (i.aliases?.some(same)) i.aliases = i.aliases.filter((x) => !same(x)); });
+      item.aliases = (item.aliases || []).concat({ partyId, key }).slice(-100);
+    });
+  });
 }
 
 function voidPurchase(po, reason) {
@@ -455,17 +459,18 @@ function voidPurchase(po, reason) {
 
 // ---------- AI 识别入货单（OpenAI 兼容接口） ----------
 // 浏览器把照片（模型支持图片时）或本地 OCR / PDF 读出的文字发过来，这里转发给设置里的接口，整理成统一格式返回
-const AI_PROMPT = `You read supplier invoices, tax invoices and delivery dockets for an Australian inventory system.
+const AI_PROMPT = `You read business documents for an Australian inventory system: supplier invoices, delivery dockets, customer purchase orders, sales orders and spreadsheets.
 The input is either images of the document or text extracted from it. OCR text may contain misread characters: use the column layout and the rule qty x unit price - discount = line amount to correct them.
 Reply with ONLY one JSON object (no markdown, no explanation) in exactly this shape:
-{"supplier":{"name":"","abn":""},"invoiceNo":"","date":"YYYY-MM-DD","pricesIncludeGst":false,
- "lines":[{"code":"","description":"","qty":0,"unitPrice":0,"discountPct":0,"amount":0}],
+{"seller":{"name":"","abn":""},"buyer":{"name":"","abn":""},"documentNo":"","orderNo":"","date":"YYYY-MM-DD","pricesIncludeGst":false,
+ "lines":[{"code":"","description":"","qty":0,"unitPrice":null,"discountPct":0,"amount":null}],
  "subtotal":null,"gst":null,"total":null}
 Rules:
-- supplier is the business that issued the document (the seller), not the Bill To / Ship To customer.
+- seller: the business selling the goods (usually the issuer of an invoice or docket). buyer: the customer (Bill To / Ship To, or the business placing a purchase order).
+- documentNo: the invoice, docket or order number of this document. orderNo: the buyer's purchase order / order number if printed (for a purchase order it is the same as documentNo).
 - One entry in "lines" per product line, in document order. Do not include subtotal, GST, total, freight, delivery or rounding rows.
-- code: the supplier's product code / SKU / item number if printed, otherwise "".
-- qty: quantity supplied. unitPrice: price per unit as printed, before discount. discountPct: line discount percent, 0 if none. amount: line total as printed.
+- code: the product code / SKU / item number if printed, otherwise "".
+- qty: quantity supplied or ordered. unitPrice: price per unit as printed, before discount. discountPct: line discount percent, 0 if none. amount: line total as printed. Use null for unitPrice and amount when the document shows no prices (e.g. an order that lists only quantities).
 - pricesIncludeGst: true only if the unit prices and line amounts include GST.
 - Numbers are plain JSON numbers without currency symbols or thousands separators. Use null for a total that is not shown and "" for unknown text.
 - Australian dates are written day first (DD/MM/YYYY); output YYYY-MM-DD.`;
@@ -489,7 +494,7 @@ async function scanWithAi(body) {
   }
   if (!r.ok) throw new HttpError(502, `AI 接口返回错误（${r.status}）：${r.error}`);
   const msg = r.data?.choices?.[0]?.message?.content;
-  return readAiReply(Array.isArray(msg) ? msg.map((x) => x?.text || '').join('') : String(msg || ''));
+  return readAiReply(Array.isArray(msg) ? msg.map((x) => x?.text || '').join('') : String(msg || ''), body.mode === 'sale' ? 'sale' : 'purchase');
 }
 
 async function postAi(url, key, body) {
@@ -512,7 +517,8 @@ async function postAi(url, key, body) {
   return { ok: res.ok, status: res.status, data, error: res.ok ? '' : String(err).slice(0, 300) };
 }
 
-function readAiReply(reply) {
+// mode = 'purchase' 时对方是卖方（供应商），'sale' 时是买方（客户）；对方不会是自己公司
+function readAiReply(reply, mode) {
   const start = reply.indexOf('{');
   let r = null;
   try { r = JSON.parse(reply.slice(start, reply.lastIndexOf('}') + 1)); } catch {}
@@ -522,9 +528,15 @@ function readAiReply(reply) {
     code: str(l?.code, 60), desc: str(l?.description, 200),
     qty: n(l?.qty), price: n(l?.unitPrice), discount: n(l?.discountPct) || 0, amount: n(l?.amount),
   })).filter((l) => (l.code || l.desc) && (l.qty || l.amount));
+  const party = (p) => ({ name: str(p?.name, 120), abn: str(p?.abn, 30) });
+  const key = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const ownName = key(db.settings.companyName), ownAbn = key(db.settings.abn);
+  const isOwn = (p) => (ownAbn && key(p.abn) === ownAbn) || (ownName.length >= 4 && key(p.name).includes(ownName));
+  const usable = (p) => (p.name || p.abn) && !isOwn(p);
+  const [first, second] = mode === 'sale' ? [party(r.buyer), party(r.seller)] : [party(r.seller), party(r.buyer)];
   return {
-    supplier: { name: str(r.supplier?.name, 120), abn: str(r.supplier?.abn, 30) },
-    ref: str(r.invoiceNo, 60), date: isDate(r.date) ? r.date : '',
+    party: usable(first) ? first : usable(second) ? second : first,
+    ref: str(mode === 'sale' ? r.orderNo || r.documentNo : r.documentNo || r.orderNo, 60), date: isDate(r.date) ? r.date : '',
     incGst: typeof r.pricesIncludeGst === 'boolean' ? r.pricesIncludeGst : null,
     totals: { subtotal: n(r.subtotal), gst: n(r.gst), total: n(r.total) },
     rows,

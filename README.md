@@ -26,10 +26,11 @@ Dante Inventory is a web-based inventory and invoicing system: **a single-page H
   - New items can be created while entering a purchase; purchases can be printed; voiding a purchase deducts the stock again
 - **Dashboard**: sales and gross profit this month, receivables and overdue amount, purchases this month, stock value at cost, low stock (one-click reorder), overdue invoices
 - **Stock movements**: every stock in / out / stocktake is logged and links to the related invoice or purchase
-- **Scan supplier invoices**: take a photo of a supplier invoice or delivery docket, or upload a scan or PDF, and the item lines (code, description, quantity, unit cost) are filled into a new purchase for you to check before receiving stock
-  - Free on-device OCR (English) runs in the browser, so the server does no extra work; digital PDFs are read directly without OCR
+- **Scan documents into purchases and sales invoices**: upload a photo, scan, PDF, Excel (.xlsx / .xls) or CSV of a supplier invoice / delivery docket, or of a customer order, and the item lines (code, description, quantity, price) are filled into a new purchase or sales invoice for you to check before saving
+  - Free on-device OCR (English) runs in the browser, so the server does no extra work; digital PDFs and spreadsheets are read directly without OCR
+  - Spreadsheets in any layout: columns are recognised by their headers (Code / SKU, Description, Qty, Unit Price, Disc %, Amount… in English or Chinese), so every supplier's or customer's format becomes the same item lines
   - Optional AI recognition through any OpenAI-compatible API (DeepSeek, OpenAI, Gemini, Qwen, Ollama…), set up in Settings
-  - Finds the supplier by ABN, matches items by SKU or name, converts GST-inclusive prices to ex GST, highlights lines where quantity × price doesn't match the amount, and remembers each supplier's codes for next time
+  - Finds the supplier / customer by ABN or name, matches items by SKU or name, converts prices between GST-inclusive and ex GST, highlights lines where quantity × price doesn't match the amount, and remembers each supplier's and customer's codes for next time
 - **Bulk item import**: upload a CSV or paste straight from Excel and preview row-by-row validation before importing; existing items (matched by SKU, or by name when there is no SKU) can be skipped or updated, and stock can be set to the quantities in the sheet
 - **CSV export** (items, invoice summary, invoice lines, purchase lines, stock movements), **JSON backup and restore**
 - **Password protection**: login is required once `APP_PASSWORD` is set
@@ -58,10 +59,11 @@ Dante Inventory is a web-based inventory and invoicing system: **a single-page H
   - 采购中可直接新建物品；采购单可打印；作废会扣回库存
 - **概览**：本月销售额、本月毛利、应收款与逾期金额、本月采购额、库存成本金额、低库存（可一键采购）、逾期发票
 - **库存流水**：每次入库 / 出库 / 盘点都有记录，并可点击跳转到对应发票或采购单
-- **识别入货单**：给供应商发票 / 送货单拍照，或上传扫描件、PDF，自动把商品行（货号、品名、数量、进货价）填进采购入库单，核对后再入库
-  - 免费的本地识别（英文 OCR）在浏览器里完成，不占服务器资源；电子版 PDF 直接读取文字，不需要 OCR
+- **识别单据（采购入库 / 销售发票）**：上传供应商发票、送货单或客户订货单的照片、扫描件、PDF、Excel（.xlsx / .xls）或 CSV，自动把商品行（货号、品名、数量、价格）填进采购入库单或销售发票，核对后再保存
+  - 免费的本地识别（英文 OCR）在浏览器里完成，不占服务器资源；电子版 PDF 和表格直接读取，不需要 OCR
+  - 表格格式不统一也没关系：按表头认列（Code / SKU、Description、Qty、Unit Price、Disc %、Amount 等，中英文都认），各家不同的格式都转成同样的商品行
   - 可选 AI 识别：在「设置」填写任意 OpenAI 兼容接口（DeepSeek、OpenAI、Gemini、通义千问、Ollama 等）
-  - 按 ABN 找供应商、按 SKU 或名称匹配物品、含 GST 价格自动换算成不含 GST、「数量 × 单价」与金额对不上的行标红提示，并记住每个供应商的货号对照，下次自动匹配
+  - 按 ABN 或名称找供应商 / 客户、按 SKU 或名称匹配物品、含 / 不含 GST 价格自动换算、「数量 × 单价」与金额对不上的行标红提示，并记住每个供应商和客户的货号对照，下次自动匹配
 - **批量导入物品**：上传 CSV 或从 Excel 直接复制粘贴，导入前预览逐行校验结果；已存在的物品（按 SKU，无 SKU 按名称）可选择跳过或更新资料，并可按表格数量盘点库存
 - **导出 CSV**（物品、发票汇总、发票明细、采购明细、库存流水）、**JSON 备份与恢复**
 - **密码保护**：设置 `APP_PASSWORD` 后必须登录才能访问
@@ -84,20 +86,24 @@ Versions use the format `major.feature.fix`: bump the second number for new feat
 
 ### v1.3.0（2026-10-07）
 
-- Scan supplier invoices: on the Purchases page, use “📷 Scan supplier invoice” (also inside a new purchase) to choose photos, scans or PDFs. The recognised lines are filled into the purchase; nothing changes stock until you click Receive stock.
+- Scan supplier invoices: on the Purchases page, use “📷 Scan supplier invoice” (also inside a new purchase) to choose photos, scans, PDFs, Excel or CSV files. The recognised lines are filled into the purchase; nothing changes stock until you click Receive stock.
+- Scan customer orders into sales invoices: on the Sales invoices page, use “📷 Scan order to invoice” (or “📷 Scan document” inside a new invoice) for a customer's purchase order, order list or delivery docket. The customer is found by ABN or name, the customer's PO number goes into Reference, document prices are converted to the invoice's GST mode, and lines without a price use the item's default sale price.
+- Excel (.xlsx / .xls / .ods) and CSV files: columns are recognised by their headers in English or Chinese, whatever their order, so different suppliers' and customers' layouts become the same item lines; GST-inclusive price columns and percentage discounts are handled. Sheets without a recognisable header fall back to the quantity × price rule. Excel files are read with SheetJS, downloaded from cdn.sheetjs.com on first use.
 - Free on-device recognition: photos and scanned PDFs are read with English OCR in the browser (Tesseract.js); digital PDFs are read directly (pdf.js). Before OCR, shadows in phone photos are evened out and table border lines are erased, since digits touching the lines are otherwise misread. The engine (about 5 MB) is downloaded from the jsDelivr CDN on first use and then cached by the browser.
 - Item lines are found by checking quantity × unit price (less any discount %) against the line amount, so no per-supplier templates are needed. The same check repairs a “$” misread as 5 or 8 (e.g. 50.75 → 0.75) only when the corrected numbers add up; lines that still don't add up are highlighted in red, and the total is compared with the invoice subtotal / total.
-- The supplier is found by ABN (or name), the supplier invoice number is filled in, GST-inclusive prices are converted to ex GST, and unmatched lines can be created as new items or added as a new supplier in one click. Item choices are remembered by the supplier's code and description, so the next invoice from the same supplier matches automatically even if one of them is misread.
-- Optional AI recognition (Settings → AI invoice recognition): works with any OpenAI-compatible API. Text-only models such as DeepSeek receive the OCR text, which costs very little; models that can read images receive the photos. The API key stays on the server and is not included in downloaded backups.
+- The supplier is found by ABN (or name), the supplier invoice number is filled in, GST-inclusive prices are converted to ex GST, and unmatched lines can be created as new items, or the supplier / customer added, in one click. Item choices are remembered by each supplier's and customer's code and description, so their next document matches automatically even if one of them is misread.
+- Optional AI recognition (Settings → AI document recognition): works with any OpenAI-compatible API. Text-only models such as DeepSeek receive the OCR text, which costs very little; models that can read images receive the photos. The AI returns both seller and buyer, and the other party (never your own business) is used. The API key stays on the server and is not included in downloaded backups.
 - The recognised lines can be downloaded as a CSV.
 
 ---
 
-- 识别入货单：在「采购入库」页点「📷 识别入货单」（新建采购单里也有），选择照片、扫描件或 PDF，识别出的商品行会填进采购单；点「确认入库」之前库存不会变化。
+- 识别入货单：在「采购入库」页点「📷 识别入货单」（新建采购单里也有），选择照片、扫描件、PDF、Excel 或 CSV，识别出的商品行会填进采购单；点「确认入库」之前库存不会变化。
+- 识别订单开票：在「销售发票」页点「📷 识别订单开票」（新建发票里是「📷 识别单据」），上传客户的订货单（PO）、订单表或出货单。按 ABN 或名称找客户，客户 PO 号填进「客户订单号 Reference」，单据价格按发票的含 / 不含 GST 模式换算，没有价格的行使用物品默认售价。
+- 支持 Excel（.xlsx / .xls / .ods）和 CSV：按表头认列（中英文列名、任意列顺序），不同供应商和客户的格式都转成同样的商品行；含 GST 的价格列、百分比格式的折扣都能正确处理。认不出表头的表格按「数量 × 单价 = 金额」规则识别。Excel 用 SheetJS 读取，首次使用时从 cdn.sheetjs.com 下载。
 - 免费的本地识别：照片和扫描版 PDF 在浏览器里做英文 OCR（Tesseract.js）；电子版 PDF 直接读取文字（pdf.js）。OCR 之前先拉平手机照片的阴影，并擦掉表格框线（紧贴框线的数字容易被认错）。识别组件约 5 MB，首次使用时从 jsDelivr CDN 下载，之后浏览器会缓存。
 - 不需要按供应商写模板：每行检查「数量 × 单价（扣除折扣%）≈ 金额」来找出商品行。同一规则还能修正把「$」认成 5 或 8 的情况（如 50.75 → 0.75），只在修正后算得通时才采用；仍然对不上的行标红提示，合计也会与单据小计 / 总计核对。
-- 按 ABN（或名称）自动选择供应商并填写供应商单号；含 GST 的价格自动换算成不含 GST；没匹配上的行可一键新建为物品，单据上的新供应商也可一键新增。确认入库时会按供应商的货号和品名记住对应的物品，同一供应商的下一张单据自动匹配，其中一项认错也能对上。
-- 可选 AI 识别（「设置」→「AI 识别入货单」）：支持任何 OpenAI 兼容接口。DeepSeek 等纯文本模型收到的是 OCR 出的文字，费用很低；能看图片的模型直接收到照片。API Key 只保存在服务器上，不会出现在下载的备份里。
+- 按 ABN（或名称）自动选择供应商并填写供应商单号；含 GST 的价格自动换算成不含 GST；没匹配上的行可一键新建为物品，单据上的新供应商 / 客户也可一键新增。保存时会按每个供应商、客户的货号和品名记住对应的物品，他们的下一张单据自动匹配，其中一项认错也能对上。
+- 可选 AI 识别（「设置」→「AI 识别单据」）：支持任何 OpenAI 兼容接口。DeepSeek 等纯文本模型收到的是 OCR 出的文字，费用很低；能看图片的模型直接收到照片。AI 同时返回卖方和买方，系统取对方（不会选成自己公司）。API Key 只保存在服务器上，不会出现在下载的备份里。
 - 识别结果可以下载为 CSV。
 
 ### v1.2.1（2026-10-01）
@@ -141,25 +147,25 @@ Versions use the format `major.feature.fix`: bump the second number for new feat
 - 首个版本：物品与产品图片、澳洲格式销售发票（GST）、客户与应收款、采购入库与供应商、库存流水、CSV 导出与 JSON 备份、密码保护。
 - 部署方式：Docker、HTTPS（Caddy）、仅 WireGuard 访问。
 
-## Scanning supplier invoices 识别入货单
+## Scanning documents 识别单据
 
-1. Go to **Purchases** and click **📷 Scan supplier invoice**, then take a photo or choose a photo / scan / PDF (select several files for a multi-page invoice).
-2. Check each line: red lines don't add up, and lines without an item can be matched to an existing item or created as a new item. Then click **Receive stock**.
-3. Tips for photos: lay the invoice flat, fill the frame, avoid strong shadows and keep it upright.
+1. **Purchases**: click **📷 Scan supplier invoice**. **Sales invoices**: click **📷 Scan order to invoice**. Then take a photo or choose a photo / scan / PDF / Excel / CSV file (select several files for a multi-page document).
+2. Check each line: red lines don't add up, and lines without an item can be matched to an existing item or created as a new item. Then click **Receive stock** or **Create invoice**.
+3. Tips for photos: lay the document flat, fill the frame, avoid strong shadows and keep it upright. Spreadsheets need a header row (e.g. Code, Description, Qty, Unit Price, Amount) for the most reliable result.
 
-**AI recognition (optional).** In **Settings → AI invoice recognition**, enter any OpenAI-compatible API. For example, DeepSeek: base URL `https://api.deepseek.com`, model `deepseek-chat`, plus your API key, with “can read images” unticked. The photo is turned into text in the browser first and only the text is sent to the AI. For models that accept images (GPT-4o, Gemini, Qwen-VL…), tick “can read images” to send the photos directly. Invoice contents are sent to the provider you choose; clear the base URL to turn AI recognition off.
+**AI recognition (optional).** In **Settings → AI document recognition**, enter any OpenAI-compatible API. For example, DeepSeek: base URL `https://api.deepseek.com`, model `deepseek-chat`, plus your API key, with “can read images” unticked. The photo is turned into text in the browser first and only the text is sent to the AI. For models that accept images (GPT-4o, Gemini, Qwen-VL…), tick “can read images” to send the photos directly. Invoice contents are sent to the provider you choose; clear the base URL to turn AI recognition off.
 
-> On-device recognition needs the browser to reach `cdn.jsdelivr.net` the first time it is used.
+> On-device recognition needs the browser to reach `cdn.jsdelivr.net` (and `cdn.sheetjs.com` for Excel files) the first time it is used.
 
 ---
 
-1. 进入「采购入库」，点「📷 识别入货单」，拍照或选择照片 / 扫描件 / PDF（多页单据可一次选多张）。
-2. 逐行核对：标红的行金额对不上；没有对应物品的行可以选已有物品，或点「+ 新建为物品」。核对无误后点「确认入库」。
-3. 拍照建议：单据放平、尽量占满画面、避免强烈阴影、保持正向。
+1. **采购**：在「采购入库」点「📷 识别入货单」；**销售**：在「销售发票」点「📷 识别订单开票」。然后拍照或选择照片 / 扫描件 / PDF / Excel / CSV（多页单据可一次选多张）。
+2. 逐行核对：标红的行金额对不上；没有对应物品的行可以选已有物品，或点「+ 新建为物品」。核对无误后点「确认入库」或「开具发票并出库」。
+3. 拍照建议：单据放平、尽量占满画面、避免强烈阴影、保持正向。表格最好有表头行（如 Code、Description、Qty、Unit Price、Amount），识别最准。
 
-**AI 识别（可选）**：在「设置 → AI 识别入货单」填写任意 OpenAI 兼容接口。以 DeepSeek 为例：接口地址 `https://api.deepseek.com`，模型 `deepseek-chat`，填入 API Key，**不要**勾选「能直接看图片」。系统会先在浏览器里把照片识别成文字，只把文字发给 AI。支持图片的模型（GPT-4o、Gemini、通义千问 VL 等）可以勾选「能直接看图片」，直接发送照片。单据内容会发送给你选择的服务商；清空接口地址即可关闭 AI 识别。
+**AI 识别（可选）**：在「设置 → AI 识别单据」填写任意 OpenAI 兼容接口。以 DeepSeek 为例：接口地址 `https://api.deepseek.com`，模型 `deepseek-chat`，填入 API Key，**不要**勾选「能直接看图片」。系统会先在浏览器里把照片识别成文字，只把文字发给 AI。支持图片的模型（GPT-4o、Gemini、通义千问 VL 等）可以勾选「能直接看图片」，直接发送照片。单据内容会发送给你选择的服务商；清空接口地址即可关闭 AI 识别。
 
-> 本地识别首次使用时，浏览器需要能访问 `cdn.jsdelivr.net`。
+> 本地识别首次使用时，浏览器需要能访问 `cdn.jsdelivr.net`（读取 Excel 还需要 `cdn.sheetjs.com`）。
 
 ## Run locally 本地运行
 
