@@ -16,3 +16,4 @@ README 更新记录、commit message、PR 标题和描述都要中英双语，�
 - README 更新记录：先写英文条目，`---` 分隔后写同样内容的中文条目（条目顺序一致）。
 - commit 标题 / PR 标题：`vX.Y.Z: English summary / 中文摘要`。
 - commit 正文 / PR 描述：先英文，`---` 分隔后写中文。
+- 项目描述（`package.json` 的 description、GitHub 仓库 About）也一样：英文在前，中文在后。
