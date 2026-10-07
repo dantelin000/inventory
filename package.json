@@ -1,6 +1,6 @@
 {
   "name": "dante-jinxiaocun",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Dante Inventory: a zero-dependency web inventory system with Chinese / English UI. 但丁进销存：支持中英切换的零依赖网页进销存系统",
   "main": "server.js",
   "scripts": {

@@ -105,6 +105,7 @@
             <option value="paid">已付清</option><option value="void">已作废</option>
           </select>
           <input type="month" id="iMonth" title="按月份筛选">
+          <button class="btn" id="ebayBtn">🛒 eBay 订单出货</button>
           <button class="btn" id="scanInvBtn">📷 识别订单开票</button>
           <button class="btn primary" id="newInvBtn">+ 新建发票</button>
         </div>
@@ -246,6 +247,28 @@
           <p class="hint">支持任何 OpenAI 兼容接口，例如 DeepSeek（接口地址 https://api.deepseek.com，模型 deepseek-chat）、OpenAI、Google Gemini、通义千问、智谱、OpenRouter、本机 Ollama。</p>
           <p class="hint">DeepSeek 等纯文本模型：不要勾选「能直接看图片」，系统会先在浏览器里把照片识别成文字，再交给 AI 整理，费用很低。勾选后会直接把照片发给 AI，准确率更高，但需要支持图片的模型。</p>
           <p class="hint">单据内容会发送给你填写的服务商。不填则只使用免费的本地识别；清空接口地址即可关闭 AI 识别。</p>
+        </fieldset>
+        <fieldset>
+          <legend>eBay 店铺（可选）</legend>
+          <div class="fields">
+            <label class="f">App ID (Client ID)<input name="ebayAppId" maxlength="200" autocomplete="off"></label>
+            <label class="f">Cert ID (Client Secret)<input name="ebayCertId" type="password" maxlength="200" autocomplete="new-password"></label>
+            <label class="f">RuName（eBay Redirect URL name）<input name="ebayRuName" maxlength="200" autocomplete="off"></label>
+            <label class="f">环境<select name="ebayEnv"><option value="production">正式 Production</option><option value="sandbox">沙盒 Sandbox（测试用）</option></select></label>
+          </div>
+          <div class="row" style="flex-wrap:wrap;margin-top:12px">
+            <span id="ebayStatus"></span>
+            <button type="button" class="btn sm" id="ebayConnect">连接 eBay 账号</button>
+            <button type="button" class="btn sm danger hidden" id="ebayDisconnect">断开</button>
+          </div>
+          <p class="hint">在 developer.ebay.com 的 Application Keys 页面取得 App ID 和 Cert ID；在 User Tokens 页面的「Get a Token from eBay via Your Application」添加一个 RuName，把其中的 auth accepted URL 填成下面的地址：</p>
+          <p class="hint"><code id="ebayCallback"></code></p>
+          <p class="hint">只申请读取订单的权限，不会改动 eBay 上的任何内容。授权约 18 个月有效，到期后重新连接即可。</p>
+          <details class="import-help" style="margin:8px 0 0">
+            <summary>授权后页面打不开？</summary>
+            <p class="hint">系统没有 HTTPS 域名时（例如只在内网使用），eBay 授权完成后浏览器会停在打不开的页面。把那个页面地址栏里的完整网址复制下来，粘贴到这里：</p>
+            <div class="row" style="margin-top:6px"><input id="ebayCodeUrl" placeholder="https://…?code=…" autocomplete="off"><button type="button" class="btn sm" id="ebayCodeGo">提交</button></div>
+          </details>
         </fieldset>
         <button class="btn primary">保存设置</button>
       </form>
@@ -532,6 +555,25 @@
       <button class="btn primary">确认入库</button>
     </div>
   </form>
+</dialog>
+
+<!-- eBay 订单 → 单日出货单 -->
+<dialog id="ebayDlg" class="wide">
+  <div class="dlg-body">
+    <h3>eBay 订单 · 单日出货单</h3>
+    <div class="row" style="flex-wrap:wrap;align-items:flex-end">
+      <label class="f">订单日期<input type="date" id="ebayDate" required></label>
+      <button type="button" class="btn" id="ebayFetch">拉取订单</button>
+      <span class="hint" style="flex:1;min-width:220px">按下单时间拉取这一天的 eBay 订单；已录入的订单不会重复录入</span>
+    </div>
+    <div id="ebayInfo" class="scan-info hidden"></div>
+    <div id="ebayList"></div>
+    <div class="dialog-actions">
+      <button type="button" class="btn" data-close>取消</button>
+      <button type="button" class="btn" id="ebayPrint" disabled>打印出货单</button>
+      <button type="button" class="btn primary" id="ebayGo" disabled>录入出货单并扣库存</button>
+    </div>
+  </div>
 </dialog>
 
 <!-- 单据查看（发票 / 采购单 / 对账单） -->

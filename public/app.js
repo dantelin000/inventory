@@ -6,7 +6,8 @@ const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const pad = (n) => String(n).padStart(2, '0');
-const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const dayOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const today = () => dayOf(new Date());
 const addDays = (date, n) => { const d = new Date(date + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + Number(n || 0)); return d.toISOString().slice(0, 10); };
 const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400000);
 const fmtDate = (d) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : ''); // 澳洲日期格式 DD/MM/YYYY
@@ -89,6 +90,12 @@ async function start() {
   $('#app').classList.remove('hidden');
   $('#logoutBtn').classList.toggle('hidden', !s.passwordRequired);
   await reload();
+  // eBay 授权完成后从 /api/ebay/callback 跳回来，带着结果
+  const ebayResult = new URLSearchParams(location.search).get('ebay');
+  if (ebayResult !== null) {
+    history.replaceState(null, '', location.pathname + location.hash);
+    toast(ebayResult === 'ok' ? 'eBay 账号已连接' : ebayResult);
+  }
 }
 
 async function reload() {
@@ -97,6 +104,7 @@ async function reload() {
   // 编辑中的单据：刷新下拉选项（例如刚新增了客户 / 物品）
   if ($('#invDlg').open) { fillSelect($('#invCustomer'), D.customers, '（散客 / 不指定客户）', $('#invCustomer').value); renderInvLines(); }
   if ($('#poDlg').open) { fillSelect($('#poSupplier'), D.suppliers, '（不指定供应商）', $('#poSupplier').value); renderPoLines(); }
+  if ($('#ebayDlg').open) renderEbay();
 }
 
 // ---------- 导航 ----------
@@ -691,7 +699,7 @@ function renderInvoices() {
     const s = invStatus(v);
     if (st === 'open' ? !isOpen(v) : st && s !== st) return false;
     if (mon && !v.date.startsWith(mon)) return false;
-    return !q || [v.no, v.reference, v.customer.name, v.customer.phone, v.note, ...v.lines.map((l) => l.name + ' ' + l.sku)].some((f) => String(f || '').toLowerCase().includes(q));
+    return !q || [v.no, v.reference, v.customer.name, v.customer.phone, v.note, ...v.lines.map((l) => l.name + ' ' + l.sku + ' ' + (l.description || ''))].some((f) => String(f || '').toLowerCase().includes(q));
   });
   $('#invBody').innerHTML = list.length ? list.map((v) => {
     const s = invStatus(v);
@@ -1173,6 +1181,153 @@ function downloadScanCsv(r) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
+// ---------- eBay 订单 → 单日出货单 ----------
+// 拉取所选日期（本地时间）的 eBay 订单，逐行对应物品；可先打印出货单，录入时整天合成一张发票并扣库存（见 server.js）
+let ebay = { date: '', orders: [], seq: 0 };
+const EBAY_FULFILL = { NOT_STARTED: ['unpaid', '未发货'], IN_PROGRESS: ['partial', '部分发货'], FULFILLED: ['paid', '已发货'] };
+// 不能录入的原因：已录入 / 已取消 / 未付款
+const ebayBlock = (o) => (o.recorded ? 'recorded' : o.cancel === 'CANCELED' ? 'cancelled' : ['PAID', 'PARTIALLY_REFUNDED'].includes(o.payment) ? '' : 'unpaid');
+// 同一刊登（及多属性）的行
+const ebaySame = (a, b) => (a.legacyItemId ? a.legacyItemId === b.legacyItemId && a.variationId === b.variationId : a.title === b.title && a.variation === b.variation);
+function ebayInfo(html) {
+  $('#ebayInfo').classList.toggle('hidden', !html);
+  $('#ebayInfo').innerHTML = html;
+}
+
+$('#ebayBtn').onclick = () => {
+  if (!$('#ebayDate').value) $('#ebayDate').value = today();
+  ebay.date = '';
+  renderEbay();
+  $('#ebayDlg').showModal();
+  if (S().ebayConnected) return fetchEbay();
+  ebayInfo(`<div class="warn">${esc('还没有连接 eBay 账号。请先到「设置 → eBay 店铺」填写并连接。')}</div>
+    <div><button type="button" class="btn sm" data-goto="settings">去设置</button></div>`);
+};
+$('#ebayInfo').addEventListener('click', (e) => { if (e.target.closest('[data-goto]')) $('#ebayDlg').close(); });
+$('#ebayDlg').addEventListener('close', () => { ebay.seq++; }); // 关掉对话框即放弃正在进行的拉取
+$('#ebayFetch').onclick = () => fetchEbay();
+$('#ebayDate').addEventListener('change', () => fetchEbay());
+
+async function fetchEbay() {
+  const date = $('#ebayDate').value || today();
+  const from = new Date(date + 'T00:00:00'), to = new Date(from);
+  to.setDate(to.getDate() + 1);
+  const seq = ++ebay.seq;
+  ebay.date = '';
+  renderEbay();
+  ebayInfo(`<div class="scan-status"><span class="spin"></span><span>${esc('正在从 eBay 拉取订单…')}</span></div>`);
+  $('#ebayFetch').disabled = true;
+  try {
+    const r = await api(`/api/ebay/orders?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(new Date(to - 1).toISOString())}`);
+    if (seq !== ebay.seq) return;
+    ebay.date = date;
+    ebay.orders = r.orders.map((o) => Object.assign(o, { sel: !ebayBlock(o) && o.cancel !== 'IN_PROGRESS' }));
+    renderEbay();
+  } catch (err) {
+    if (seq === ebay.seq) ebayInfo(`<div class="stock-warn">${esc(err.message)}</div>`);
+  } finally {
+    if (seq === ebay.seq) $('#ebayFetch').disabled = false;
+  }
+}
+
+function renderEbay() {
+  const list = ebay.date ? ebay.orders : [];
+  const sel = list.filter((o) => o.sel);
+  const lines = sel.flatMap((o) => o.lines);
+  const missing = lines.filter((l) => !itemById(l.itemId)).length;
+  const need = new Map();
+  lines.forEach((l) => { const it = itemById(l.itemId); if (it) need.set(it, (need.get(it) || 0) + l.qty); });
+  const short = [...need].filter(([it, qty]) => qty > it.qty);
+  $('#ebayGo').disabled = !sel.length || missing > 0 || short.length > 0;
+  $('#ebayPrint').disabled = !sel.length;
+  if (!ebay.date) { $('#ebayList').innerHTML = ''; return; }
+
+  const done = list.filter((o) => o.recorded).length;
+  const notes = list.length
+    ? [['', `共 ${list.length} 个订单，已选 ${sel.length} 个（${lines.reduce((a, l) => a + l.qty, 0)} 件商品，${money(sum(sel, (o) => o.total))}）`]]
+    : [['', `${fmtDate(ebay.date)} 没有 eBay 订单`]];
+  if (done) notes.push(['ok', `${done} 个订单已录入过，不会重复录入`]);
+  if (missing) notes.push(['warn', `${missing} 行商品还没有对应的物品，请选择或新建物品`]);
+  short.forEach(([it, qty]) => notes.push(['warn', `「${it.name}」库存不足：当前 ${it.qty}${it.unit}，需要 ${qty}${it.unit}`]));
+  ebayInfo(notes.map(([cls, msg]) => `<div class="${cls}">${esc(msg)}</div>`).join(''));
+
+  const opts = itemOptions();
+  const pickable = list.filter((o) => !ebayBlock(o));
+  $('#ebayList').innerHTML = list.length ? `
+    <div class="table-wrap" style="margin-top:12px;border:1px solid var(--line);border-radius:8px">
+      <table class="lines ebay-orders">
+        <thead><tr><th><input type="checkbox" data-all title="全选" ${pickable.length && pickable.every((o) => o.sel) ? 'checked' : ''}></th>
+          <th>订单</th><th>收货人</th><th>商品</th><th class="num">金额</th></tr></thead>
+        <tbody>${list.map((o, i) => ebayRow(o, i, opts)).join('')}</tbody>
+      </table>
+    </div>` : '';
+  $$('#ebayList select[data-l]').forEach((s) => { s.value = list[s.dataset.o].lines[s.dataset.l].itemId || ''; });
+}
+
+function ebayRow(o, i, opts) {
+  const block = ebayBlock(o);
+  const f = EBAY_FULFILL[o.fulfillment];
+  const tags = [
+    o.recorded && `<a href="#" class="tag paid" data-act="inv" data-id="${o.recorded.id}">已录入 ${esc(o.recorded.no)}</a>`,
+    block === 'cancelled' && '<span class="tag void">已取消</span>',
+    block === 'unpaid' && '<span class="tag overdue">未付款</span>',
+    o.cancel === 'IN_PROGRESS' && '<span class="tag partial">买家申请取消</span>',
+    f && `<span class="tag ${f[0]}">${f[1]}</span>`,
+  ].filter(Boolean).join(' ');
+  return `<tr class="${block ? 'voided' : ''}">
+    <td><input type="checkbox" data-o="${i}" ${o.sel ? 'checked' : ''} ${block ? 'disabled' : ''}></td>
+    <td><div>${esc(o.orderId)}</div><div class="muted small">${fmtTime(o.created)}${o.salesRecord ? ' · #' + esc(o.salesRecord) : ''}</div><div class="ebay-tags">${tags}</div></td>
+    <td class="small"><strong>${esc(o.shipTo.name)}</strong><div class="pre">${esc(o.shipTo.address)}</div><div class="muted">${esc(o.buyer)}</div>
+      ${o.note ? `<div class="warn-text">买家留言：${esc(o.note)}</div>` : ''}</td>
+    <td>${o.lines.map((l, j) => `<div class="ebay-line">
+      <div class="scan-src"><strong>${l.qty} ×</strong> ${esc([l.title, l.variation, l.sku].filter(Boolean).join(' · '))}</div>
+      <select data-o="${i}" data-l="${j}" ${block ? 'disabled' : ''}><option value="">选择商品…</option>${opts}</select>
+      ${!block && !itemById(l.itemId) ? `<button type="button" class="linkbtn" data-newitem="${i}-${j}">+ 新建为物品</button>` : ''}
+    </div>`).join('')}</td>
+    <td class="num">${money(o.total)}${o.postage ? `<div class="muted small">含运费 ${money(o.postage)}</div>` : ''}</td>
+  </tr>`;
+}
+
+// 给一行选了物品后，同一刊登的其他行若还没选，一起填上
+function setEbayItem(line, itemId) {
+  line.itemId = itemId;
+  if (itemId) ebay.orders.forEach((o) => o.lines.forEach((l) => { if (!itemById(l.itemId) && ebaySame(l, line)) l.itemId = itemId; }));
+}
+$('#ebayList').addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.matches('[data-all]')) ebay.orders.forEach((o) => { if (!ebayBlock(o)) o.sel = t.checked; });
+  else if (t.matches('input[data-o]')) ebay.orders[t.dataset.o].sel = t.checked;
+  else if (t.matches('select[data-l]')) setEbayItem(ebay.orders[t.dataset.o].lines[t.dataset.l], Number(t.value) || null);
+  renderEbay();
+});
+$('#ebayList').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-newitem]');
+  if (!b) return;
+  const [i, j] = b.dataset.newitem.split('-').map(Number);
+  const l = ebay.orders[i].lines[j];
+  openItem(null, {
+    noInitQty: true,
+    prefill: { name: [l.title, l.variation].filter(Boolean).join(' '), sku: l.sku },
+    onSaved: (it) => { setEbayItem(l, it.id); renderEbay(); },
+  });
+});
+
+$('#ebayPrint').onclick = () => openDoc({ html: dispatchDoc({ date: ebay.date, orders: ebay.orders.filter((o) => o.sel) }), title: `eBay Dispatch ${ebay.date}` });
+$('#ebayGo').onclick = async () => {
+  const sel = ebay.orders.filter((o) => o.sel);
+  $('#ebayGo').disabled = true;
+  try {
+    const inv = await api('/api/ebay/dispatch', { method: 'POST', body: {
+      date: ebay.date,
+      orders: sel.map((o) => ({ orderId: o.orderId, lines: o.lines.map((l) => ({ lineItemId: l.lineItemId, itemId: l.itemId })) })),
+    } });
+    $('#ebayDlg').close();
+    toast(`已录入 ${inv.no}（${sel.length} 个订单），库存已扣减`);
+    await reload();
+    openInvoiceView(inv.id);
+  } catch (err) { toast(err.message); renderEbay(); }
+};
+
 // ---------- 单据模板（澳洲常用格式） ----------
 function docHeader(title) {
   const s = S();
@@ -1321,6 +1476,52 @@ function statementDoc(c) {
   </div>`;
 }
 
+// eBay 单日出货单（内部使用，跟随界面语言）：拣货汇总（同一物品合并，按库位排序）+ 每个订单的收货人和商品
+function dispatchDoc({ date, no, orders }) {
+  const pick = new Map();
+  orders.forEach((o) => o.lines.forEach((l) => {
+    const it = itemById(l.itemId);
+    const key = it ? it.id : 'ebay:' + (l.sku || l.title);
+    const p = pick.get(key) || { sku: it ? it.sku : l.sku, name: it ? it.name : l.title, location: it?.location || '', unit: it?.unit || '', qty: 0 };
+    p.qty += l.qty;
+    pick.set(key, p);
+  }));
+  const picks = [...pick.values()].sort((a, b) => (a.location || '￿').localeCompare(b.location || '￿') || a.name.localeCompare(b.name, 'zh-CN'));
+  const unit = (u) => (u && !/^(件|个)$/.test(u) ? ' ' + esc(u) : '');
+  const box = '<span class="d-box"></span>';
+  return `<div class="doc">
+    ${docHeader('出货单')}
+    <div class="d-parties">
+      <div><div class="d-lbl">eBay</div><strong>${orders.length} 个订单 · ${picks.reduce((a, p) => a + p.qty, 0)} 件商品</strong></div>
+      <div class="d-meta">
+        <div>日期</div><div>${fmtDate(date)}</div>
+        ${no ? `<div>发票号</div><div>${esc(no)}</div>` : ''}
+      </div>
+    </div>
+    <div class="d-h">拣货汇总</div>
+    <table>
+      <thead><tr><th>库位</th><th>SKU</th><th>商品</th><th class="num">数量</th><th class="num">✓</th></tr></thead>
+      <tbody>${picks.map((p) => `<tr><td>${esc(p.location)}</td><td>${esc(p.sku)}</td><td>${esc(p.name)}</td>
+        <td class="num"><strong>${p.qty}</strong>${unit(p.unit)}</td><td class="num">${box}</td></tr>`).join('')}</tbody>
+    </table>
+    <div class="d-h">订单明细</div>
+    <table>
+      <thead><tr><th>订单</th><th>收货人</th><th>商品</th><th class="num">✓</th></tr></thead>
+      <tbody>${orders.map((o) => `<tr>
+        <td>${esc(o.orderId)}${o.salesRecord ? `<div class="d-sub">#${esc(o.salesRecord)}</div>` : ''}<div class="d-sub">${esc(o.buyer)}</div></td>
+        <td><strong>${esc(o.shipTo.name)}</strong>${o.shipTo.company ? `<div>${esc(o.shipTo.company)}</div>` : ''}<div class="pre">${esc(o.shipTo.address)}</div>
+          ${o.shipTo.phone ? `<div>${esc(o.shipTo.phone)}</div>` : ''}${o.service ? `<div class="d-sub">${esc(o.service)}</div>` : ''}</td>
+        <td>${o.lines.map((l) => {
+          const it = itemById(l.itemId);
+          const src = [it && it.name !== l.title ? l.title : '', l.variation].filter(Boolean).join(' · '); // 物品名和 eBay 标题不同时两个都印
+          return `<div><strong>${l.qty} ×</strong> ${esc(it ? it.name : l.title)}${src ? `<div class="d-sub">${esc(src)}</div>` : ''}</div>`;
+        }).join('')}${o.note ? `<div class="d-buyer-note">买家留言：${esc(o.note)}</div>` : ''}</td>
+        <td class="num">${box}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
 // ---------- 单据查看 / 打印 ----------
 let printable = null;
 function openDoc({ html, title, extra = '', actions = [] }) {
@@ -1379,6 +1580,10 @@ function openInvoiceView(id) {
   }
   const actions = [];
   if (v.status !== 'void' && !v.payments.length) actions.push({ label: '作废（退回库存）', cls: 'danger left', onClick: () => voidInvoice(v) });
+  if (v.ebay) actions.push({ label: '查看出货单', onClick: () => openDoc({
+    html: dispatchDoc({ date: v.date, no: v.no, orders: v.ebay.orders }), title: `${v.no} - eBay Dispatch`,
+    actions: [{ label: '查看发票', cls: 'left', onClick: () => openInvoiceView(v.id) }],
+  }) });
   openDoc({ html: invoiceDoc(v), title: `${v.no}${v.customer.name ? ' - ' + v.customer.name : ''}`, extra, actions });
 
   $('#payForm')?.addEventListener('submit', async (e) => {
@@ -1432,14 +1637,20 @@ function openStatement(id) {
 
 // ---------- 设置 ----------
 function renderSettings() {
+  renderEbaySetup();
   const f = $('#settingsForm');
-  if (f.contains(document.activeElement) && document.activeElement !== f.querySelector('button')) return; // 正在编辑时不覆盖
+  if (f.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON') return; // 正在编辑时不覆盖
   const s = S();
   ['companyName', 'abn', 'companyPhone', 'companyEmail', 'companyAddress', 'website', 'taxName', 'taxRate', 'currency', 'currencyCode',
-    'invoicePrefix', 'poPrefix', 'paymentTermsDays', 'invoiceFooter', 'bankName', 'accountName', 'bsb', 'accountNumber', 'payId', 'aiUrl', 'aiModel']
+    'invoicePrefix', 'poPrefix', 'paymentTermsDays', 'invoiceFooter', 'bankName', 'accountName', 'bsb', 'accountNumber', 'payId', 'aiUrl', 'aiModel',
+    'ebayAppId', 'ebayRuName']
     .forEach((k) => { f[k].value = s[k] ?? ''; });
-  f.aiKey.value = ''; // Key 不会从服务端返回，留空表示不修改
+  // Key / Cert ID 不会从服务端返回，留空表示不修改
+  f.aiKey.value = '';
   f.aiKey.placeholder = s.aiKeySet ? '已保存（留空则不修改）' : '';
+  f.ebayCertId.value = '';
+  f.ebayCertId.placeholder = s.ebayCertSet ? '已保存（留空则不修改）' : '';
+  f.ebayEnv.value = s.ebayEnv === 'sandbox' ? 'sandbox' : 'production';
   f.aiVision.checked = !!s.aiVision;
   f.gstRegistered.checked = !!s.gstRegistered;
   f.pricesIncGst.value = String(!!s.pricesIncGst);
@@ -1447,20 +1658,56 @@ function renderSettings() {
   $('#logoDel').classList.toggle('hidden', !s.logo);
   if (s.logo) $('#logoImg').src = imgUrl(s.logo);
 }
-$('#settingsForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const f = e.target;
+function saveSettings() {
+  const f = $('#settingsForm');
   const body = Object.fromEntries(new FormData(f));
   body.gstRegistered = f.gstRegistered.checked;
   body.pricesIncGst = f.pricesIncGst.value === 'true';
   body.aiVision = f.aiVision.checked;
+  return api('/api/settings', { method: 'PUT', body });
+}
+$('#settingsForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
   try {
-    await api('/api/settings', { method: 'PUT', body });
+    await saveSettings();
     document.activeElement?.blur();
     toast('设置已保存');
     await reload();
   } catch (err) { toast(err.message); }
 });
+
+// eBay 店铺：连接时先保存填好的 App ID 等，再跳到 eBay 授权页，授权后回到 /api/ebay/callback
+function renderEbaySetup() {
+  const s = S();
+  $('#ebayStatus').innerHTML = s.ebayConnected
+    ? `<span class="tag paid">已连接</span> <span class="muted small">授权有效期至 ${fmtDate(dayOf(new Date(s.ebayExpires)))}</span>`
+    : '<span class="muted">未连接</span>';
+  $('#ebayConnect').textContent = s.ebayConnected ? '重新连接' : '连接 eBay 账号';
+  $('#ebayDisconnect').classList.toggle('hidden', !s.ebayConnected);
+  $('#ebayCallback').textContent = location.origin + '/api/ebay/callback';
+}
+$('#ebayConnect').onclick = async () => {
+  try {
+    await saveSettings();
+    location.href = (await api('/api/ebay/connect')).url;
+  } catch (err) { toast(err.message); }
+};
+$('#ebayDisconnect').onclick = async () => {
+  if (!askConfirm('确定断开 eBay 账号？')) return;
+  try { await api('/api/ebay/token', { method: 'DELETE' }); document.activeElement?.blur(); toast('eBay 账号已断开'); await reload(); }
+  catch (err) { toast(err.message); }
+};
+$('#ebayCodeGo').onclick = async () => {
+  try {
+    await saveSettings();
+    await api('/api/ebay/code', { method: 'POST', body: { url: $('#ebayCodeUrl').value } });
+    $('#ebayCodeUrl').value = '';
+    document.activeElement?.blur();
+    toast('eBay 账号已连接');
+    await reload();
+  } catch (err) { toast(err.message); }
+};
+$('#ebayCodeUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#ebayCodeGo').click(); } });
 $('#logoInput').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';

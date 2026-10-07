@@ -31,6 +31,7 @@ Dante Inventory is a web-based inventory and invoicing system: **a single-page H
   - Spreadsheets in any layout: columns are recognised by their headers (Code / SKU, Description, Qty, Unit Price, Disc %, Amount… in English or Chinese), so every supplier's or customer's format becomes the same item lines
   - Optional AI recognition through any OpenAI-compatible API (DeepSeek, OpenAI, Gemini, Qwen, Ollama…), set up in Settings
   - Finds the supplier / customer by ABN or name, matches items by SKU or name, converts prices between GST-inclusive and ex GST, highlights lines where quantity × price doesn't match the amount, and remembers each supplier's and customer's codes for next time
+- **eBay orders → daily dispatch list**: pull the day's eBay orders straight from your eBay account, match each line to an item, print a dispatch list (pick list + ship-to addresses) and record it in one step: stock is deducted and the day's sales go into one paid invoice
 - **Bulk item import**: upload a CSV or paste straight from Excel and preview row-by-row validation before importing; existing items (matched by SKU, or by name when there is no SKU) can be skipped or updated, and stock can be set to the quantities in the sheet
 - **CSV export** (items, invoice summary, invoice lines, purchase lines, stock movements), **JSON backup and restore**
 - **Password protection**: login is required once `APP_PASSWORD` is set
@@ -64,6 +65,7 @@ Dante Inventory is a web-based inventory and invoicing system: **a single-page H
   - 表格格式不统一也没关系：按表头认列（Code / SKU、Description、Qty、Unit Price、Disc %、Amount 等，中英文都认），各家不同的格式都转成同样的商品行
   - 可选 AI 识别：在「设置」填写任意 OpenAI 兼容接口（DeepSeek、OpenAI、Gemini、通义千问、Ollama 等）
   - 按 ABN 或名称找供应商 / 客户、按 SKU 或名称匹配物品、含 / 不含 GST 价格自动换算、「数量 × 单价」与金额对不上的行标红提示，并记住每个供应商和客户的货号对照，下次自动匹配
+- **eBay 订单 → 单日出货单**：直接从 eBay 账号拉取当天的订单，逐行对应物品，打印出货单（拣货汇总 + 收货地址），一键录入：自动扣库存，当天的销售合成一张已收款的发票
 - **批量导入物品**：上传 CSV 或从 Excel 直接复制粘贴，导入前预览逐行校验结果；已存在的物品（按 SKU，无 SKU 按名称）可选择跳过或更新资料，并可按表格数量盘点库存
 - **导出 CSV**（物品、发票汇总、发票明细、采购明细、库存流水）、**JSON 备份与恢复**
 - **密码保护**：设置 `APP_PASSWORD` 后必须登录才能访问
@@ -80,9 +82,29 @@ Dante Inventory is a web-based inventory and invoicing system: **a single-page H
 
 ## Changelog 更新记录
 
-Versions use the format `major.feature.fix`: bump the second number for new features and the third number for bug fixes only. Every update changes `version` in `package.json` and adds a section with the same version below; after merging into main, a GitHub release with that version is published automatically (Releases page).
+Versions use the format `major.feature.fix`: bump the second number for new features and the third number for bug fixes only. Every update changes `version` in `package.json` and adds a section with the same version below; after merging into main, a GitHub release with that version is published automatically (Releases page). Update notes are bilingual: English first, then Chinese.
 
-版本号格式为 `主版本.功能版本.修复版本`：加新功能升第二位，只修 bug 升第三位。每次更新都要改 `package.json` 里的 `version`，并在下面加一段同版本号的说明；合并进 main 后会自动在 GitHub 发布同名版本（Releases 页面）。
+版本号格式为 `主版本.功能版本.修复版本`：加新功能升第二位，只修 bug 升第三位。每次更新都要改 `package.json` 里的 `version`，并在下面加一段同版本号的说明；合并进 main 后会自动在 GitHub 发布同名版本（Releases 页面）。更新说明一律中英双语，英文在前、中文在后。
+
+### v1.4.0（2026-10-07）
+
+- eBay orders → daily dispatch list: on the Sales invoices page, “🛒 eBay dispatch” pulls the eBay orders placed on a chosen day (today by default) through the eBay Sell Fulfillment API, showing order number, time, ship-to address, buyer note, items and amounts, plus shipped / cancelled / unpaid / cancellation-requested status.
+- Each eBay line is matched to an item by the listing chosen last time, then by SKU (the eBay Custom label), then by an identical name. Unmatched lines can be matched by hand (other lines of the same listing follow) or created as a new item in one click; the choice is remembered per listing and variation.
+- Print dispatch list: a pick list (the same item merged across orders, sorted by location) and every order's ship-to name, address, phone, postage service, items and buyer note, with tick boxes for picking and packing. It can be printed before recording, and is kept with the invoice afterwards (“View dispatch list”).
+- Record dispatch and deduct stock: the selected orders become one sales invoice to the customer “eBay” (created automatically), GST-inclusive like eBay prices, with promotion discounts as a line discount %, the payment recorded as eBay, and stock deducted. Lines shipped overseas are GST-free exports. The orders are re-read from eBay when recording; orders already recorded, cancelled or unpaid are refused, and stock shortages are shown before recording.
+- To undo, delete the eBay payment and void the invoice: stock returns and the orders can be recorded again. The invoices list can be searched by eBay order number.
+- Setup in Settings → eBay store: App ID, Cert ID and RuName from developer.ebay.com, then “Connect eBay account” (if the redirect page can't be opened, paste its address instead). Only read access to orders is requested; the access token renews itself, and the Cert ID and tokens stay on the server and are left out of downloaded backups.
+- Postage is shown in the dialog and on the dispatch list but not added to the invoice, which only records the item lines that move stock.
+
+---
+
+- eBay 订单 → 单日出货单：在「销售发票」页点「🛒 eBay 订单出货」，通过 eBay Sell Fulfillment API 拉取所选日期（默认今天）下单的 eBay 订单，显示订单号、时间、收货地址、买家留言、商品和金额，以及已发货 / 已取消 / 未付款 / 买家申请取消等状态。
+- 每行商品自动对应物品：先按上次为这个刊登选过的物品，再按 SKU（eBay 的 Custom label），最后按名称完全相同。没对上的行可以手动选择（同一刊登的其他行一起填上），或一键新建为物品；选择会按刊登和多属性记住，下次自动匹配。
+- 打印出货单：拣货汇总（多个订单里的同一物品合并，按库位排序）+ 每个订单的收货人、地址、电话、运送方式、商品和买家留言，带勾选框方便拣货打包。录入前就能打印，录入后保存在发票里，可随时「查看出货单」重印。
+- 录入出货单并扣库存：选中的订单合成一张客户为「eBay」（自动创建）的销售发票，价格与 eBay 一样含 GST，促销折扣记为行折扣%，自动登记 eBay 收款并扣减库存；寄往海外的行按出口免 GST。录入时会从 eBay 重新读取订单，已录入、已取消或未付款的订单不能录入，库存不足会在录入前提示。
+- 要撤销：删除该发票的 eBay 收款记录后作废发票，库存退回，订单可以重新录入。发票列表可以按 eBay 订单号搜索。
+- 在「设置 → eBay 店铺」填写 developer.ebay.com 的 App ID、Cert ID 和 RuName，再点「连接 eBay 账号」（授权后跳转的页面打不开时，可把那个网址粘贴进来）。只申请读取订单的权限；access token 过期自动续期，Cert ID 和 token 只保存在服务器上，不会出现在下载的备份里。
+- 运费显示在对话框和出货单上，但不计入发票；发票只记录会扣库存的商品行。
 
 ### v1.3.0（2026-10-07）
 
@@ -146,6 +168,40 @@ Versions use the format `major.feature.fix`: bump the second number for new feat
 
 - 首个版本：物品与产品图片、澳洲格式销售发票（GST）、客户与应收款、采购入库与供应商、库存流水、CSV 导出与 JSON 备份、密码保护。
 - 部署方式：Docker、HTTPS（Caddy）、仅 WireGuard 访问。
+
+## eBay orders eBay 订单
+
+**One-time setup**
+
+1. Sign in at [developer.ebay.com](https://developer.ebay.com) with the eBay account that sells, and create a **Production** keyset under **Application Keys**: note the **App ID (Client ID)** and **Cert ID (Client Secret)**.
+2. Open **User Tokens** → **Get a Token from eBay via Your Application** → **Add eBay Redirect URL**. This creates a **RuName**. Set its **auth accepted URL** to `https://your-domain/api/ebay/callback` (the exact address is shown in Settings) and save.
+3. In this system, open **Settings → eBay store**, fill in the App ID, Cert ID and RuName, click **Connect eBay account**, sign in to eBay and agree. You come back to Settings showing “Connected”.
+   - If the page eBay sends you back to can't be opened (for example the system is only reachable on a private network), copy the full address from the browser's address bar and paste it under “Page won't load after authorising?”.
+
+**Every day**
+
+1. **Sales invoices → 🛒 eBay dispatch**: today's orders load automatically (pick another date to fetch that day).
+2. Check that every line has an item, then **Print dispatch list** for picking and packing.
+3. **Record dispatch and deduct stock**: one paid invoice to “eBay” is created and stock is deducted. Fetching again later in the day shows recorded orders greyed out, so only new orders are recorded.
+
+> The connection only reads orders; it doesn't mark them shipped or change anything on eBay. The authorisation lasts about 18 months (the expiry date is shown in Settings); reconnect when it expires.
+
+---
+
+**首次设置**
+
+1. 用卖货的 eBay 账号登录 [developer.ebay.com](https://developer.ebay.com)，在 **Application Keys** 创建 **Production** 的 keyset，记下 **App ID（Client ID）** 和 **Cert ID（Client Secret）**。
+2. 打开 **User Tokens** → **Get a Token from eBay via Your Application** → **Add eBay Redirect URL**，得到一个 **RuName**。把它的 **auth accepted URL** 设为 `https://你的域名/api/ebay/callback`（「设置」页会显示准确地址）并保存。
+3. 在本系统的 **设置 → eBay 店铺** 填入 App ID、Cert ID 和 RuName，点 **连接 eBay 账号**，登录 eBay 并同意授权，回到设置页显示「已连接」即可。
+   - 如果 eBay 跳回的页面打不开（例如系统只在内网使用），把浏览器地址栏里的完整网址复制下来，粘贴到「授权后页面打不开？」里提交。
+
+**每天使用**
+
+1. **销售发票 → 🛒 eBay 订单出货**：自动拉取今天的订单（改日期可以拉取其他日子的订单）。
+2. 确认每一行都对应了物品，点 **打印出货单** 用来拣货打包。
+3. 点 **录入出货单并扣库存**：生成一张客户为「eBay」、已收款的发票并扣减库存。当天晚些时候再拉取，已录入的订单会变灰，只录入新订单。
+
+> 连接只读取订单，不会在 eBay 上标记发货或改动任何内容。授权约 18 个月有效（到期日显示在设置页），到期后重新连接即可。
 
 ## Scanning documents 识别单据
 
