@@ -133,6 +133,19 @@ legend { padding: 0 6px; font-weight: 600; }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 8px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* eBay 订单 */
+a.tag { text-decoration: none; }
+.ebay-orders td { white-space: normal; }
+.ebay-orders td:first-child { width: 32px; padding-top: 10px; }
+.ebay-orders td:nth-child(2), .ebay-orders td.num { white-space: nowrap; }
+.ebay-orders td:nth-child(3) { min-width: 150px; }
+.ebay-orders .pre { white-space: pre-line; }
+.ebay-orders select { min-width: 220px; }
+.ebay-orders .scan-src { margin: 0 0 4px; color: var(--text); }
+.ebay-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.ebay-line + .ebay-line { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.warn-text { color: var(--warn); }
+
 /* 图片 */
 .thumb { width: 44px; height: 44px; border-radius: 6px; object-fit: cover; background: var(--bg); border: 1px solid var(--line); display: block; cursor: zoom-in; }
 .thumb.none { display: grid; place-items: center; color: var(--muted); font-size: 18px; cursor: default; }
@@ -190,6 +203,9 @@ td.img { width: 60px; padding-right: 0; }
 .doc .d-foot { margin-top: 28px; text-align: center; color: #4b5563; font-size: 12px; }
 .doc .d-aging { margin-top: 16px; }
 .doc .d-aging td, .doc .d-aging th { text-align: center; }
+.doc .d-h { font-weight: 700; font-size: 14px; margin: 20px 0 8px; }
+.doc .d-box { display: inline-block; width: 14px; height: 14px; border: 1.5px solid #1a1a1a; border-radius: 2px; vertical-align: middle; }
+.doc .d-buyer-note { color: #b45309; margin-top: 4px; }
 .doc .stamp { position: absolute; top: 150px; right: 50px; transform: rotate(-14deg); border: 4px solid; font-size: 40px; font-weight: 900; padding: 2px 20px; border-radius: 8px; opacity: .3; pointer-events: none; letter-spacing: 4px; }
 .doc .stamp.paid { color: #16a34a; } .doc .stamp.void { color: #dc2626; }
 @media (max-width: 640px) {

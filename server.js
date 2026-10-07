@@ -29,6 +29,8 @@ const DEFAULT_SETTINGS = {
   invoiceFooter: 'Thank you for your business!',
   // AI 识别入货单：任意 OpenAI 兼容接口（DeepSeek、OpenAI、Gemini、通义千问…），aiVision 表示模型能直接看图片
   aiUrl: '', aiKey: '', aiModel: '', aiVision: false,
+  // eBay 店铺：开发者账号的 App ID / Cert ID / RuName；ebayToken 是授权后拿到的 token
+  ebayEnv: 'production', ebayAppId: '', ebayCertId: '', ebayRuName: '', ebayToken: null,
 };
 
 fs.mkdirSync(IMG_DIR, { recursive: true });
@@ -83,8 +85,12 @@ process.on('SIGINT', () => { flush(); process.exit(0); });
 process.on('SIGTERM', () => { flush(); process.exit(0); });
 
 const nextId = () => db.seq++;
-// AI 接口的 Key 只留在服务端，不返回给浏览器，也不写进下载的备份
-const publicSettings = () => { const { aiKey, ...s } = db.settings; return Object.assign(s, { aiKeySet: !!aiKey }); };
+// AI 接口的 Key、eBay 的 Cert ID 和 token 只留在服务端，不返回给浏览器，也不写进下载的备份
+const publicSettings = () => {
+  const { aiKey, ebayCertId, ebayToken, ...s } = db.settings;
+  const link = ebayLink();
+  return Object.assign(s, { aiKeySet: !!aiKey, ebayCertSet: !!ebayCertId, ebayConnected: !!link, ebayExpires: link?.refreshExpires || null });
+};
 const now = () => new Date().toISOString();
 
 // ---------- 工具 ----------
@@ -319,7 +325,7 @@ function nextNo(kind, prefix, list) {
 }
 
 // ---------- 销售发票 ----------
-function createInvoice(body) {
+function createInvoice(body, maxLines = 200) {
   const s = db.settings;
   const date = isDate(body.date) ? body.date : localDate();
   let customer;
@@ -332,7 +338,7 @@ function createInvoice(body) {
   const dueDate = isDate(body.dueDate) && body.dueDate >= date ? body.dueDate : addDays(date, terms);
 
   if (!Array.isArray(body.lines) || !body.lines.length) throw new HttpError(400, '发票至少需要一行商品');
-  if (body.lines.length > 200) throw new HttpError(400, '商品行过多');
+  if (body.lines.length > maxLines) throw new HttpError(400, '商品行过多');
 
   const incGst = body.pricesIncGst === undefined ? s.pricesIncGst : bool(body.pricesIncGst);
   const rate = s.gstRegistered ? s.taxRate / 100 : 0;
@@ -497,6 +503,9 @@ async function scanWithAi(body) {
   return readAiReply(Array.isArray(msg) ? msg.map((x) => x?.text || '').join('') : String(msg || ''), body.mode === 'sale' ? 'sale' : 'purchase');
 }
 
+// fetch 连不上时的原因，如 ECONNREFUSED、ENOTFOUND
+const netCause = (e) => (e.name === 'TimeoutError' ? '超时' : e.cause?.code || e.cause?.errors?.[0]?.code || e.cause?.message || e.message);
+
 async function postAi(url, key, body) {
   let res;
   try {
@@ -507,8 +516,7 @@ async function postAi(url, key, body) {
       signal: AbortSignal.timeout(180000),
     });
   } catch (e) {
-    const cause = e.cause?.code || e.cause?.errors?.[0]?.code || e.cause?.message || e.message; // 如 ECONNREFUSED、ENOTFOUND
-    throw new HttpError(502, `无法连接 AI 接口：${e.name === 'TimeoutError' ? '超时' : cause}`);
+    throw new HttpError(502, `无法连接 AI 接口：${netCause(e)}`);
   }
   const raw = await res.text();
   let data = null;
@@ -541,6 +549,235 @@ function readAiReply(reply, mode) {
     totals: { subtotal: n(r.subtotal), gst: n(r.gst), total: n(r.total) },
     rows,
   };
+}
+
+// ---------- eBay：拉取某一天的订单，生成单日出货单 ----------
+// 用开发者账号的 App ID / Cert ID / RuName 走 OAuth 授权：refresh token 约 18 个月有效，access token 2 小时，过期自动刷新。
+// 只申请读取订单的权限。录入时整天的订单合成一张客户为「eBay」的发票（价格含 GST、已收款），扣库存并记住每个刊登对应的物品。
+const EBAY_SCOPE = 'https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly';
+const EBAY_PAID = ['PAID', 'PARTIALLY_REFUNDED'];
+const ebayHost = (sub) => `https://${sub}.${db.settings.ebayEnv === 'sandbox' ? 'sandbox.' : ''}ebay.com`;
+// 换了 App ID 或环境后，原来的授权不再使用
+function ebayLink() {
+  const s = db.settings, t = s.ebayToken;
+  return t?.refresh && t.appId === s.ebayAppId && t.env === s.ebayEnv ? t : null;
+}
+function ebaySetup() {
+  const s = db.settings;
+  if (!s.ebayAppId || !s.ebayCertId || !s.ebayRuName) throw new HttpError(400, '请先在「设置」填写 eBay 的 App ID、Cert ID 和 RuName');
+  return s;
+}
+
+// state 防止伪造的授权回调：带时间戳的签名，1 小时内有效
+const ebayState = (ts) => ts + '.' + crypto.createHmac('sha256', SECRET).update('ebay:' + ts).digest('hex').slice(0, 32);
+function checkEbayState(state) {
+  const ts = Number(String(state || '').split('.')[0]);
+  return ts > Date.now() - 3600000 && safeEqual(state, ebayState(ts));
+}
+function ebayAuthUrl() {
+  const s = ebaySetup();
+  const q = new URLSearchParams({ client_id: s.ebayAppId, redirect_uri: s.ebayRuName, response_type: 'code', scope: EBAY_SCOPE, state: ebayState(Date.now()), prompt: 'login' });
+  return ebayHost('auth') + '/oauth2/authorize?' + q;
+}
+
+async function ebayOAuth(params) {
+  const s = ebaySetup();
+  let res;
+  try {
+    res = await fetch(ebayHost('api') + '/identity/v1/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: 'Basic ' + Buffer.from(s.ebayAppId + ':' + s.ebayCertId).toString('base64') },
+      body: new URLSearchParams(params).toString(),
+      signal: AbortSignal.timeout(30000),
+    });
+  } catch (e) {
+    throw new HttpError(502, `无法连接 eBay：${netCause(e)}`);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new HttpError(502, `eBay 授权失败：${str(data.error_description || data.error || res.status, 300)}`), { rejected: true });
+  return data;
+}
+
+// 授权码换 token：来自回调地址，或用户粘贴的授权后网址（系统没有 HTTPS 域名时）
+async function ebayConnect(code) {
+  const s = ebaySetup();
+  if (!code) throw new HttpError(400, '没有找到授权码，请粘贴授权后浏览器地址栏里的完整网址');
+  const t = await ebayOAuth({ grant_type: 'authorization_code', code, redirect_uri: s.ebayRuName });
+  if (!t.refresh_token) throw new HttpError(502, 'eBay 授权失败：没有返回 refresh token');
+  const at = Date.now();
+  s.ebayToken = {
+    appId: s.ebayAppId, env: s.ebayEnv, connectedAt: now(),
+    refresh: t.refresh_token, refreshExpires: at + (Number(t.refresh_token_expires_in) || 47304000) * 1000,
+    access: t.access_token, accessExpires: at + (Number(t.expires_in) || 7200) * 1000,
+  };
+  save();
+}
+function codeFromPaste(text) {
+  text = String(text || '').trim();
+  const m = /[?&]code=([^&#\s]+)/.exec(text);
+  if (!m) return /^[\w^#.%=:+/-]{20,}$/.test(text) ? text : '';
+  try { return decodeURIComponent(m[1]); } catch { return m[1]; }
+}
+
+async function ebayAccess(force) {
+  ebaySetup();
+  const t = ebayLink();
+  if (!t) throw new HttpError(400, '请先在「设置」连接 eBay 账号');
+  if (!force && t.access && t.accessExpires > Date.now() + 60000) return t.access;
+  let r;
+  try {
+    r = await ebayOAuth({ grant_type: 'refresh_token', refresh_token: t.refresh, scope: EBAY_SCOPE });
+  } catch (e) {
+    if (e.rejected) throw new HttpError(400, 'eBay 授权已失效，请在「设置」重新连接 eBay 账号');
+    throw e;
+  }
+  t.access = r.access_token;
+  t.accessExpires = Date.now() + (Number(r.expires_in) || 7200) * 1000;
+  save();
+  return t.access;
+}
+
+async function ebayGet(pathAndQuery) {
+  for (let retry = 0; ; retry++) {
+    const token = await ebayAccess(retry > 0);
+    let res;
+    try {
+      res = await fetch(ebayHost('api') + pathAndQuery, { headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' }, signal: AbortSignal.timeout(60000) });
+    } catch (e) {
+      throw new HttpError(502, `无法连接 eBay：${netCause(e)}`);
+    }
+    const data = await res.json().catch(() => null);
+    if (res.status === 401 && !retry) continue; // access token 被提前作废：刷新后再试一次
+    if (!res.ok) {
+      const err = data?.errors?.[0];
+      throw new HttpError(502, `eBay 返回错误（${res.status}）：${str(err?.longMessage || err?.message || '', 300)}`);
+    }
+    return data || {};
+  }
+}
+
+// filter 按下单时间查（每页最多 200 个）；orderIds 按订单号查（每次最多 50 个，此时 filter 无效）
+async function fetchEbayOrders(query) {
+  const out = [];
+  for (let offset = 0; offset < 5000; offset += 200) {
+    const r = await ebayGet('/sell/fulfillment/v1/order?' + new URLSearchParams(Object.assign({ limit: 200, offset }, query)));
+    out.push(...(Array.isArray(r.orders) ? r.orders : []));
+    if (!r.next || !r.orders?.length) break;
+  }
+  return out;
+}
+
+const ebayAmount = (a) => round2(Number(a?.value) || 0);
+// eBay 订单 → 出货单需要的内容（金额以卖家币种计）
+function ebayOrder(o) {
+  const step = (Array.isArray(o.fulfillmentStartInstructions) ? o.fulfillmentStartInstructions : []).find((f) => f?.shippingStep)?.shippingStep || {};
+  const to = step.shipTo || {};
+  const a = to.contactAddress || {};
+  const country = str(a.countryCode, 2).toUpperCase();
+  return {
+    orderId: str(o.orderId, 60), salesRecord: str(o.salesRecordReference, 30), created: str(o.creationDate, 40),
+    buyer: str(o.buyer?.username, 120), note: str(o.buyerCheckoutNotes, 500),
+    shipTo: {
+      name: str(to.fullName, 120), company: str(to.companyName, 120), phone: str(to.primaryPhone?.phoneNumber, 60), country,
+      address: [a.addressLine1, a.addressLine2, [a.city, a.stateOrProvince, a.postalCode].map((x) => str(x, 80)).filter(Boolean).join(' '), country && country !== 'AU' ? country : '']
+        .map((x) => str(x, 200)).filter(Boolean).join('\n'),
+    },
+    service: str(step.shippingServiceCode, 80),
+    payment: str(o.orderPaymentStatus, 30), fulfillment: str(o.orderFulfillmentStatus, 30), cancel: str(o.cancelStatus?.cancelState, 30),
+    total: ebayAmount(o.pricingSummary?.total), postage: ebayAmount(o.pricingSummary?.deliveryCost),
+    lines: (Array.isArray(o.lineItems) ? o.lineItems : []).slice(0, 200).map((l) => {
+      const qty = Math.max(1, Math.round(Number(l.quantity) || 1));
+      const cost = ebayAmount(l.lineItemCost); // 单价 × 数量，未扣促销折扣
+      return {
+        lineItemId: str(l.lineItemId, 60), legacyItemId: str(l.legacyItemId, 30), variationId: str(l.legacyVariationId, 30),
+        sku: str(l.sku, 60), title: str(l.title, 200),
+        variation: str((Array.isArray(l.variationAspects) ? l.variationAspects : []).map((v) => `${v?.name}: ${v?.value}`).join(', '), 200),
+        qty, unitPrice: round2(cost / qty), amount: l.discountedLineItemCost ? ebayAmount(l.discountedLineItemCost) : cost,
+      };
+    }),
+  };
+}
+
+// 记住刊登（及多属性）对应的物品：同一刊登下次自动匹配；刊登号变了还能靠标题对上
+const ebayKeys = (l) => [l.legacyItemId && 'ebay:' + l.legacyItemId + (l.variationId ? ':' + l.variationId : ''),
+  'ebay:' + (l.title + ' ' + l.variation).toLowerCase().replace(/\s+/g, ' ').trim()].filter(Boolean).map((k) => k.slice(0, 120));
+function matchEbayItem(l, partyId) {
+  const alias = partyId && ebayKeys(l).map((k) => db.items.find((i) => i.aliases?.some((a) => a.partyId === partyId && a.key === k))).find(Boolean);
+  const sku = l.sku.toLowerCase(), title = l.title.toLowerCase();
+  return alias || (sku && db.items.find((i) => i.sku && i.sku.toLowerCase() === sku)) || db.items.find((i) => i.name.toLowerCase() === title) || null;
+}
+function ebayCustomer(create) {
+  let c = db.customers.find((x) => x.ebay) || db.customers.find((x) => x.name.toLowerCase() === 'ebay');
+  if (!c && create) {
+    c = Object.assign({ id: nextId(), createdAt: now(), ebay: true }, cleanContact({ name: 'eBay', terms: 0 }, '客户'));
+    db.customers.push(c);
+  }
+  return c || null;
+}
+// 已录入的订单号 → 发票（作废的发票不算，订单可以重新录入）
+function ebayRecorded() {
+  const m = new Map();
+  db.invoices.forEach((v) => { if (v.status !== 'void') (v.ebay?.orders || []).forEach((o) => m.set(o.orderId, v)); });
+  return m;
+}
+
+async function listEbayOrders(fromIso, toIso) {
+  const from = new Date(fromIso), to = new Date(toIso);
+  if (Number.isNaN(+from) || Number.isNaN(+to) || to <= from || to - from > 7 * 86400000) throw new HttpError(400, '日期范围不正确');
+  const raw = await fetchEbayOrders({ filter: `creationdate:[${from.toISOString()}..${to.toISOString()}]` });
+  const party = ebayCustomer(false);
+  const done = ebayRecorded();
+  return raw.map((o) => {
+    const x = ebayOrder(o);
+    x.lines.forEach((l) => { l.itemId = matchEbayItem(l, party?.id)?.id || null; });
+    const inv = done.get(x.orderId);
+    if (inv) x.recorded = { id: inv.id, no: inv.no };
+    return x;
+  }).sort((a, b) => a.created.localeCompare(b.created));
+}
+
+// body: { date, orders: [{ orderId, lines: [{ lineItemId, itemId }] }] }；金额、地址以 eBay 上的订单为准
+async function recordEbayDispatch(body) {
+  const picks = new Map((Array.isArray(body.orders) ? body.orders : []).slice(0, 500).map((p) => [str(p?.orderId, 60), p]));
+  picks.delete('');
+  if (!picks.size) throw new HttpError(400, '请选择要录入的订单');
+  const ids = [...picks.keys()];
+  const raw = [];
+  for (let i = 0; i < ids.length; i += 50) raw.push(...await fetchEbayOrders({ orderIds: ids.slice(i, i + 50).join(',') }));
+  const byId = new Map(raw.map((o) => [String(o.orderId), ebayOrder(o)]));
+
+  // 以下不再有 await，检查和录入之间不会插进别的请求
+  const done = ebayRecorded();
+  const orders = ids.map((id) => {
+    const o = byId.get(id);
+    if (!o) throw new HttpError(404, `eBay 上找不到订单 ${id}`);
+    if (done.has(id)) throw new HttpError(409, `订单 ${id} 已录入 ${done.get(id).no}`);
+    if (o.cancel === 'CANCELED') throw new HttpError(400, `订单 ${id} 已取消，不能录入`);
+    if (!EBAY_PAID.includes(o.payment)) throw new HttpError(400, `订单 ${id} 未付款或已全额退款，不能录入`);
+    const chosen = new Map((Array.isArray(picks.get(id).lines) ? picks.get(id).lines : []).map((l) => [str(l?.lineItemId, 60), Number(l?.itemId) || 0]));
+    o.lines.forEach((l) => {
+      l.itemId = chosen.get(l.lineItemId);
+      if (!l.itemId) throw new HttpError(400, `订单 ${id} 的「${l.title}」还没有选择对应的物品`);
+      findItem(l.itemId);
+    });
+    return o;
+  });
+  const date = isDate(body.date) ? body.date : localDate();
+  const customer = ebayCustomer(true);
+  const inv = createInvoice({
+    customerId: customer.id, date, reference: `eBay ${date.slice(8, 10)}/${date.slice(5, 7)}/${date.slice(0, 4)}`, pricesIncGst: true,
+    lines: orders.flatMap((o) => o.lines.map((l) => ({
+      itemId: l.itemId, qty: l.qty, unitPrice: l.unitPrice,
+      discountPct: l.unitPrice ? round2(Math.min(100, Math.max(0, 100 - (l.amount / (l.qty * l.unitPrice)) * 100))) : 0,
+      taxable: o.shipTo.country && o.shipTo.country !== 'AU' ? false : undefined, // 寄往海外属出口，免 GST
+      description: `eBay ${o.orderId}${o.buyer ? ' · ' + o.buyer : ''}`,
+      alias: ebayKeys(l),
+    }))),
+  }, 2000);
+  inv.ebay = { orders };
+  if (inv.total > 0) inv.payments.push({ id: nextId(), date, amount: inv.total, method: 'eBay', note: '', at: now() }); // 买家已在 eBay 付款
+  refreshPaid(inv);
+  return inv;
 }
 
 // ---------- 图片 ----------
@@ -799,6 +1036,39 @@ async function api(req, res, url) {
     return send(res, 200, po);
   }
 
+  // ----- eBay -----
+  if (p === '/api/ebay/connect' && m === 'GET') return send(res, 200, { url: ebayAuthUrl() });
+  if (p === '/api/ebay/callback' && m === 'GET') { // eBay 授权后跳回这里（RuName 的 auth accepted URL），处理完回到设置页
+    const q = url.searchParams;
+    let msg = 'ok';
+    try {
+      if (q.get('error') || !q.get('code')) throw new HttpError(400, 'eBay 授权已取消');
+      if (!checkEbayState(q.get('state'))) throw new HttpError(400, '授权链接已过期，请重新连接 eBay 账号');
+      await ebayConnect(q.get('code'));
+    } catch (e) {
+      if (!(e instanceof HttpError)) throw e;
+      msg = e.message;
+    }
+    return send(res, 302, '', { Location: '/?ebay=' + encodeURIComponent(msg) + '#settings' });
+  }
+  if (p === '/api/ebay/code' && m === 'POST') {
+    await ebayConnect(codeFromPaste((await readBody(req)).url));
+    return send(res, 200, publicSettings());
+  }
+  if (p === '/api/ebay/token' && m === 'DELETE') {
+    db.settings.ebayToken = null;
+    save();
+    return send(res, 200, publicSettings());
+  }
+  if (p === '/api/ebay/orders' && m === 'GET') {
+    return send(res, 200, { orders: await listEbayOrders(url.searchParams.get('from'), url.searchParams.get('to')) });
+  }
+  if (p === '/api/ebay/dispatch' && m === 'POST') {
+    const inv = await recordEbayDispatch(await readBody(req));
+    save();
+    return send(res, 201, inv);
+  }
+
   // ----- 设置 -----
   if (p === '/api/settings' && m === 'PUT') {
     const b = await readBody(req);
@@ -816,6 +1086,11 @@ async function api(req, res, url) {
     if (b.aiKey) s.aiKey = str(b.aiKey, 500); // 留空表示不修改
     if (b.aiVision !== undefined) s.aiVision = bool(b.aiVision);
     if (!s.aiUrl) s.aiKey = ''; // 清空接口地址即关闭 AI 识别
+    if (b.ebayEnv !== undefined) s.ebayEnv = b.ebayEnv === 'sandbox' ? 'sandbox' : 'production';
+    if (b.ebayAppId !== undefined) s.ebayAppId = str(b.ebayAppId, 200);
+    if (b.ebayRuName !== undefined) s.ebayRuName = str(b.ebayRuName, 200);
+    if (b.ebayCertId) s.ebayCertId = str(b.ebayCertId, 200); // 留空表示不修改
+    if (!s.ebayAppId) { s.ebayCertId = ''; s.ebayToken = null; } // 清空 App ID 即关闭 eBay
     s.taxName = s.taxName || 'GST';
     s.invoicePrefix = s.invoicePrefix || 'INV-';
     s.poPrefix = s.poPrefix || 'PO-';
@@ -881,11 +1156,13 @@ async function api(req, res, url) {
     next.items.forEach((i) => { i.images = (Array.isArray(i.images) ? i.images : []).filter((id) => IMG_ID.test(id) && fs.existsSync(imgFile(id))); });
     const all = ['items', 'movements', 'invoices', 'purchases', 'customers', 'suppliers'].flatMap((k) => (Array.isArray(next[k]) ? next[k] : []));
     next.seq = Math.max(Number(next.seq) || 1, Math.max(0, ...all.map((x) => x.id || 0)) + 1);
-    const aiKey = db.settings.aiKey; // 备份里不含 Key，恢复时保留当前的
+    const prev = db.settings; // 备份里不含 Key 和 eBay 授权，恢复时保留当前的
     db = next;
     migrate();
-    delete db.settings.aiKeySet;
-    if (!db.settings.aiKey && db.settings.aiUrl) db.settings.aiKey = aiKey;
+    const s = db.settings;
+    ['aiKeySet', 'ebayCertSet', 'ebayConnected', 'ebayExpires'].forEach((k) => delete s[k]);
+    if (!s.aiKey && s.aiUrl) s.aiKey = prev.aiKey;
+    if (!s.ebayCertId && s.ebayAppId && s.ebayAppId === prev.ebayAppId) Object.assign(s, { ebayCertId: prev.ebayCertId, ebayToken: prev.ebayToken });
     save();
     return send(res, 200, { ok: true, items: db.items.length, invoices: db.invoices.length, purchases: db.purchases.length });
   }
