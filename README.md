@@ -46,11 +46,6 @@ Dante Inventory is a web-based inventory and invoicing system: **a single-page H
 
 Versions use the format `major.feature.fix`: bump the second number for new features and the third number for bug fixes only. Every update changes `version` in `package.json` and adds a section with the same version to both `README.md` (English) and `README.zh-CN.md` (Chinese), in the same order; after merging into main, a GitHub release with that version is published automatically (Releases page), with the English and Chinese notes.
 
-### v1.5.0 (2026-10-10)
-
-- The README is split into two pages: this English page (`README.md`) and the Chinese page (`README.zh-CN.md`). Each links to the other at the top, just like the language switch in the app. Both pages have the same content and changelog.
-- GitHub release notes now include the English section followed by the Chinese section.
-
 ### v1.4.0 (2026-10-07)
 
 - eBay orders → daily dispatch list: on the Sales invoices page, “🛒 eBay dispatch” pulls the eBay orders placed on a chosen day (today by default) through the eBay Sell Fulfillment API, showing order number, time, ship-to address, buyer note, items and amounts, plus shipped / cancelled / unpaid / cancellation-requested status.
