@@ -1,5 +1,5 @@
 # main 上 package.json 的 version 变了就自动打 tag 并发布 GitHub Release，
-# 说明文字取 README「更新记录」里对应的 ### vX.Y.Z 段落。
+# 说明文字取 README.md（英文）和 README.zh-CN.md（中文）「更新记录」里对应的 ### vX.Y.Z 段落，英文在前。
 name: Release
 
 on:
@@ -23,13 +23,17 @@ jobs:
             echo "$VERSION already released"
             exit 0
           fi
-          awk -v v="### $VERSION" '
-            index($0, v) == 1 { on = 1; next }
-            on && (/^### / || /^## /) { exit }
-            on { print }
-          ' README.md > notes.md
-          if ! grep -q '[^[:space:]]' notes.md; then
-            echo "::error::README 更新记录里没有 ### $VERSION 段落"
-            exit 1
-          fi
+          for lang in en zh; do
+            file=README.md; [ "$lang" = zh ] && file=README.zh-CN.md
+            awk -v v="### $VERSION" '
+              index($0, v) == 1 { on = 1; next }
+              on && (/^### / || /^## /) { exit }
+              on { print }
+            ' "$file" > "notes-$lang.md"
+            if ! grep -q '[^[:space:]]' "notes-$lang.md"; then
+              echo "::error::$file 更新记录里没有 ### $VERSION 段落"
+              exit 1
+            fi
+          done
+          { cat notes-en.md; echo; echo '---'; echo; cat notes-zh.md; } > notes.md
           gh release create "$VERSION" --target "$GITHUB_SHA" --title "$VERSION" --notes-file notes.md
