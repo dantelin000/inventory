@@ -86,6 +86,20 @@ Versions use the format `major.feature.fix`: bump the second number for new feat
 
 版本号格式为 `主版本.功能版本.修复版本`：加新功能升第二位，只修 bug 升第三位。每次更新都要改 `package.json` 里的 `version`，并在下面加一段同版本号的说明；合并进 main 后会自动在 GitHub 发布同名版本（Releases 页面）。更新说明一律中英双语，英文在前、中文在后。
 
+### v1.4.1（2026-11-02）
+
+- Security fix: a malformed request path such as `GET //` no longer crashes the server (it used to stop the process before login was checked). A failed write of `db.json` (e.g. disk full) is logged instead of stopping the process.
+- Login is limited to 10 wrong passwords per IP and 100 in total every 15 minutes; behind Caddy or another local reverse proxy the real client address is used. Devices already signed in are not affected.
+- Without `SESSION_SECRET`, the login cookie is now signed with a random key stored in `DATA_DIR/session.key` (created on first start) instead of one derived from the password, so a leaked cookie can no longer be used to guess the password offline. Everyone is signed out once after upgrading.
+- The server refuses to start while `APP_PASSWORD` is still the sample value “请改成你的密码”. `db.json` is now written readable by its owner only.
+
+---
+
+- 安全修复：`GET //` 这类畸形请求路径不会再把服务端打崩（以前在检查登录之前就会让进程退出）。写 `db.json` 失败（如磁盘满）时只记录日志，不再让进程退出。
+- 登录限流：每 15 分钟同一 IP 最多输错 10 次、所有来源合计最多 100 次；经 Caddy 等本机反向代理时按真实客户端地址计算。已登录的设备不受影响。
+- 未设置 `SESSION_SECRET` 时，登录 Cookie 改用保存在 `DATA_DIR/session.key` 的随机密钥签名（首次启动自动生成），不再由密码派生，Cookie 泄露后无法再离线反推密码。升级后所有设备需要重新登录一次。
+- `APP_PASSWORD` 仍是示例里的「请改成你的密码」时拒绝启动。`db.json` 改为仅所有者可读。
+
 ### v1.4.0（2026-10-07）
 
 - eBay orders → daily dispatch list: on the Sales invoices page, “🛒 eBay dispatch” pulls the eBay orders placed on a chosen day (today by default) through the eBay Sell Fulfillment API, showing order number, time, ship-to address, buyer note, items and amounts, plus shipped / cancelled / unpaid / cancellation-requested status.
@@ -241,7 +255,7 @@ APP_PASSWORD=your-password node server.js   # 你的密码
 | `APP_PASSWORD` | Access password. **Required for public deployments** / 访问密码。**公网部署时必须设置** | Empty (no password) / 空（不需要密码） |
 | `PORT` | Listening port / 监听端口 | `3000` |
 | `DATA_DIR` | Data directory (stores `db.json`) / 数据目录（保存 `db.json`） | `./data` |
-| `SESSION_SECRET` | Signing key for the login cookie, optional / 登录 Cookie 签名密钥，可选 | Derived from the password / 由密码派生 |
+| `SESSION_SECRET` | Signing key for the login cookie, optional / 登录 Cookie 签名密钥，可选 | Random key in `DATA_DIR/session.key` / `DATA_DIR/session.key` 中的随机密钥 |
 
 ## Deploying to the internet 部署到公网
 
