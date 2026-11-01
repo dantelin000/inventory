@@ -13,8 +13,10 @@ const DB_FILE = path.join(DATA_DIR, 'db.json');
 const IMG_DIR = path.join(DATA_DIR, 'images');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PASSWORD = process.env.APP_PASSWORD || '';
-const SECRET = process.env.SESSION_SECRET || crypto.createHash('sha256').update('inv:' + PASSWORD).digest('hex');
-const SESSION_TOKEN = crypto.createHmac('sha256', SECRET).update('session:' + PASSWORD).digest('hex');
+if (PASSWORD === '请改成你的密码') {
+  console.error('❌ APP_PASSWORD 还是示例里的「请改成你的密码」，请改成你自己的密码后再启动。');
+  process.exit(1);
+}
 const MAX_IMAGES = 10;
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const round4 = (n) => Math.round((n + Number.EPSILON) * 10000) / 10000;
@@ -34,6 +36,17 @@ const DEFAULT_SETTINGS = {
 };
 
 fs.mkdirSync(IMG_DIR, { recursive: true });
+// 没设 SESSION_SECRET 时用 DATA_DIR/session.key 里的随机密钥（首次启动生成），这样登录 Cookie 不能被拿去离线反推密码
+const SECRET = process.env.SESSION_SECRET || loadSessionKey();
+const SESSION_TOKEN = crypto.createHmac('sha256', SECRET).update('session:' + PASSWORD).digest('hex');
+function loadSessionKey() {
+  const file = path.join(DATA_DIR, 'session.key');
+  try { return fs.readFileSync(file, 'utf8').trim(); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const key = crypto.randomBytes(32).toString('hex');
+  fs.writeFileSync(file, key, { mode: 0o600 });
+  return key;
+}
+
 let db = emptyDb();
 if (fs.existsSync(DB_FILE)) db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
 migrate();
@@ -71,8 +84,13 @@ function save() {
   saveTimer = setTimeout(() => {
     saveTimer = null;
     const tmp = DB_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(db));
-    fs.renameSync(tmp, DB_FILE);
+    // 写盘失败（如磁盘满）不能让整个进程退出；内存里的数据还在，下次修改时会再写
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(db), { mode: 0o600 });
+      fs.renameSync(tmp, DB_FILE);
+    } catch (e) {
+      console.error('保存 db.json 失败：', e);
+    }
   }, 50);
 }
 function flush() {
@@ -125,15 +143,48 @@ function parseCookies(req) {
   const out = {};
   (req.headers.cookie || '').split(';').forEach((p) => {
     const i = p.indexOf('=');
-    if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim());
+    if (i <= 0) return;
+    const v = p.slice(i + 1).trim();
+    try { out[p.slice(0, i).trim()] = decodeURIComponent(v); } catch { out[p.slice(0, i).trim()] = v; }
   });
   return out;
 }
 
+// 先各自取摘要再比较：长度固定，不会从比较耗时看出密码长度
 function safeEqual(a, b) {
-  const ba = Buffer.from(String(a));
-  const bb = Buffer.from(String(b));
-  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
+// 登录失败计数：同一 IP 15 分钟内最多错 10 次；所有来源合计最多 100 次（防伪造 X-Forwarded-For 轮换 IP）
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILS = 10;
+const LOGIN_MAX_FAILS_ALL = 100;
+const loginFails = new Map();
+function clientIp(req) {
+  const ip = req.socket.remoteAddress || '';
+  // 经 Caddy 等本机/内网反向代理转发时，取代理追加在 X-Forwarded-For 最右边的真实客户端地址
+  const fwd = req.headers['x-forwarded-for'];
+  if (fwd && /^(::1|127\.|::ffff:127\.|10\.|::ffff:10\.|172\.(1[6-9]|2\d|3[01])\.|::ffff:172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::ffff:192\.168\.)/.test(ip)) {
+    return String(fwd).split(',').pop().trim() || ip;
+  }
+  return ip;
+}
+function failCount(key) {
+  const f = loginFails.get(key);
+  if (f && Date.now() - f.first > LOGIN_WINDOW_MS) { loginFails.delete(key); return 0; }
+  return f ? f.count : 0;
+}
+function loginBlocked(ip) {
+  return failCount(ip) >= LOGIN_MAX_FAILS || failCount('*') >= LOGIN_MAX_FAILS_ALL;
+}
+function recordLoginFail(ip) {
+  for (const key of [ip, '*']) {
+    if (failCount(key)) loginFails.get(key).count++;
+    else loginFails.set(key, { first: Date.now(), count: 1 });
+  }
+  if (loginFails.size > 10000) loginFails.delete([...loginFails.keys()].find((k) => k !== '*'));
 }
 
 function isAuthed(req) {
@@ -840,13 +891,17 @@ async function api(req, res, url) {
   let match;
 
   if (p === '/api/login' && m === 'POST') {
+    const ip = clientIp(req);
+    if (loginBlocked(ip)) throw new HttpError(429, '尝试次数过多，请 15 分钟后再试');
     const body = await readBody(req);
     if (!PASSWORD || safeEqual(body.password || '', PASSWORD)) {
+      loginFails.delete(ip);
       const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
       return send(res, 200, { ok: true }, {
         'Set-Cookie': `inv_session=${SESSION_TOKEN}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 30}${secure}`,
       });
     }
+    recordLoginFail(ip);
     await new Promise((r) => setTimeout(r, 500)); // 减缓暴力尝试
     throw new HttpError(401, '密码错误');
   }
@@ -1184,10 +1239,12 @@ function serveStatic(res, pathname) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   try {
+    // 解析放在 try 里：像 `GET //` 这样的畸形路径会抛错，不能让它把进程带崩
+    let url;
+    try { url = new URL(req.url, 'http://localhost'); } catch { return send(res, 400, 'Bad request'); }
     if (url.pathname === '/healthz') return send(res, 200, 'ok');
     if (url.pathname.startsWith('/api/')) return await api(req, res, url);
     return serveStatic(res, url.pathname);

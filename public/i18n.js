@@ -93,7 +93,7 @@ const EN = {
   '设置已保存': 'Settings saved', 'Logo 已更新': 'Logo updated', 'Logo 已删除': 'Logo deleted',
   '无法读取该图片': 'Could not read the image', '恢复备份将覆盖当前所有数据，确定继续？': 'Restoring the backup will overwrite all current data. Continue?',
   '恢复失败：': 'Restore failed: ', '请先登录': 'Please sign in', '请求失败': 'Request failed',
-  '密码错误': 'Incorrect password', '接口不存在': 'API endpoint not found', '服务器内部错误': 'Internal server error',
+  '密码错误': 'Incorrect password', '尝试次数过多，请 15 分钟后再试': 'Too many attempts, please try again in 15 minutes','接口不存在': 'API endpoint not found', '服务器内部错误': 'Internal server error',
   '备份文件格式不正确': 'Invalid backup format', '名称不能为空': 'Name is required',
   '收款金额必须大于 0': 'Payment amount must be greater than 0',
   '已作废的发票不能收款': 'Cannot record a payment on a void invoice',
